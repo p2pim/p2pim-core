@@ -14,18 +14,12 @@ use web3::types::Address;
 #[derive(Clone, Debug)]
 struct P2pimImpl {
   account: web3::types::Address,
-  deployments: Vec<(
-    web3::types::Address,
-    p2pim_ethereum_contracts::P2pimAdjudicator,
-  )>,
+  deployments: Vec<(web3::types::Address, p2pim_ethereum_contracts::P2pimAdjudicator)>,
 }
 
 #[tonic::async_trait]
 impl P2pim for P2pimImpl {
-  async fn get_info(
-    &self,
-    _: Request<GetInfoRequest>,
-  ) -> Result<Response<GetInfoResponse>, Status> {
+  async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
       .then(|(token, adjudicator)| async move {
         adjudicator
@@ -58,12 +52,7 @@ pub async fn listen_and_serve(
   let mut builder = Server::builder();
   let router = match eth_addr.scheme() {
     "unix" => {
-      let p2pim_impl = initialize_p2pim(
-        &eth_addr,
-        web3::transports::ipc::Ipc::new(eth_addr.path()),
-        master_addr,
-      )
-      .await?;
+      let p2pim_impl = initialize_p2pim(&eth_addr, web3::transports::ipc::Ipc::new(eth_addr.path()), master_addr).await?;
       Ok(builder.add_service(P2pimServer::new(p2pim_impl)))
     }
     "ws" | "wss" => {
@@ -90,9 +79,7 @@ async fn initialize_p2pim<F, B, T>(
 ) -> Result<P2pimImpl, Box<dyn std::error::Error>>
 where
   F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
-  B: std::future::Future<Output = web3::Result<Vec<web3::Result<serde_json::Value>>>>
-    + Send
-    + 'static,
+  B: std::future::Future<Output = web3::Result<Vec<web3::Result<serde_json::Value>>>> + Send + 'static,
   T: web3::Transport<Out = F> + web3::BatchTransport<Batch = B> + Send + Sync + 'static,
 {
   info!("initializing p2pim");
@@ -112,17 +99,11 @@ where
   } else {
     p2pim_ethereum_contracts::P2pimMasterRecord::deployed(&web3).await
   }?;
-  debug!(
-    "using master record contract on address {}",
-    instance.address()
-  );
+  debug!("using master record contract on address {}", instance.address());
 
   debug!("reading accounts");
   let accounts = web3.eth().accounts().await?;
-  let account = accounts
-    .get(0)
-    .map(Clone::clone)
-    .ok_or("no accounts configured")?;
+  let account = accounts.get(0).map(Clone::clone).ok_or("no accounts configured")?;
   debug!("using account {:?}", account);
 
   // TODO react to new deployments
@@ -133,17 +114,9 @@ where
     .call()
     .await?
     .into_iter()
-    .map(|(token, adjudicator_addr)| {
-      (
-        token,
-        p2pim_ethereum_contracts::P2pimAdjudicator::at(&web3, adjudicator_addr),
-      )
-    })
+    .map(|(token, adjudicator_addr)| (token, p2pim_ethereum_contracts::P2pimAdjudicator::at(&web3, adjudicator_addr)))
     .collect();
   debug!("found deployments {:?}", deployments);
 
-  Ok(P2pimImpl {
-    account,
-    deployments,
-  })
+  Ok(P2pimImpl { account, deployments })
 }

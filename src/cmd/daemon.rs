@@ -56,9 +56,5 @@ pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
     .enable_all()
     .build()
     .unwrap()
-    .block_on(p2pim::daemon::listen_and_serve(
-      eth_addr,
-      rpc_addr,
-      master_addr,
-    ))
+    .block_on(p2pim::daemon::listen_and_serve(eth_addr, rpc_addr, master_addr))
 }
