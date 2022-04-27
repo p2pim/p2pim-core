@@ -2,14 +2,14 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::net::SocketAddr;
 
+use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
+use crate::proto::api::{BalanceEntry, GetInfoRequest, GetInfoResponse};
 use futures::StreamExt;
 use log::{debug, info};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use url::Url;
-
-use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
-use crate::proto::api::{BalanceEntry, GetInfoRequest, GetInfoResponse};
+use web3::types::Address;
 
 #[derive(Clone, Debug)]
 struct P2pimImpl {
@@ -53,18 +53,24 @@ impl P2pim for P2pimImpl {
 pub async fn listen_and_serve(
   eth_addr: Url,
   rpc_addr: SocketAddr,
+  master_addr: Option<Address>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   let mut builder = Server::builder();
   let router = match eth_addr.scheme() {
     "unix" => {
-      let p2pim_impl =
-        initialize_p2pim(&eth_addr, web3::transports::ipc::Ipc::new(eth_addr.path())).await?;
+      let p2pim_impl = initialize_p2pim(
+        &eth_addr,
+        web3::transports::ipc::Ipc::new(eth_addr.path()),
+        master_addr,
+      )
+      .await?;
       Ok(builder.add_service(P2pimServer::new(p2pim_impl)))
     }
     "ws" | "wss" => {
       let p2pim_impl = initialize_p2pim(
         &eth_addr,
         web3::transports::ws::WebSocket::new(eth_addr.as_str()),
+        master_addr,
       )
       .await?;
       Ok(builder.add_service(P2pimServer::new(p2pim_impl)))
@@ -80,6 +86,7 @@ pub async fn listen_and_serve(
 async fn initialize_p2pim<F, B, T>(
   eth_addr: &Url,
   transport_fut: impl Future<Output = Result<T, web3::Error>>,
+  master_addr: Option<Address>,
 ) -> Result<P2pimImpl, Box<dyn std::error::Error>>
 where
   F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
@@ -100,9 +107,13 @@ where
   info!("connected to eth network with id {}", network_id);
 
   debug!("initializing master record contract");
-  let instance = p2pim_ethereum_contracts::P2pimMasterRecord::deployed(&web3).await?;
+  let instance = if let Some(addr) = master_addr {
+    Ok(p2pim_ethereum_contracts::P2pimMasterRecord::at(&web3, addr))
+  } else {
+    p2pim_ethereum_contracts::P2pimMasterRecord::deployed(&web3).await
+  }?;
   debug!(
-    "instance of p2pim master record contract found on address {}",
+    "using master record contract on address {}",
     instance.address()
   );
 
