@@ -1,0 +1,20 @@
+syntax = "proto3";
+import "solidity.proto";
+package api;
+
+service P2pim {
+  rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+  solidity.Address address = 1;
+  repeated BalanceEntry balance = 2;
+}
+
+message BalanceEntry {
+  solidity.Address token = 1;
+  solidity.Uint256 available = 2;
+}

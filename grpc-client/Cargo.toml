@@ -1,0 +1,13 @@
+[package]
+name = "p2pim-grpc-client"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+prost = "0.8.0"
+prost-types = "0.8.0"
+tonic = "0.5.2"
+
+[build-dependencies]
+tonic-build = "0.5.2"
+prost-build = "0.8.0"

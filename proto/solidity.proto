@@ -1,0 +1,11 @@
+syntax = "proto3";
+package solidity;
+
+message Address {
+  bytes data = 1;
+}
+message Uint256 {
+  bytes data_le = 1;
+}
+
+
