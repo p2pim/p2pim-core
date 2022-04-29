@@ -15,6 +15,15 @@ message GetInfoResponse {
 }
 
 message BalanceEntry {
-  solidity.Address token = 1;
+  TokenInfo token = 1;
   solidity.Uint256 available = 2;
+  solidity.Uint256 allowed = 3;
+  solidity.Uint256 supplied = 4;
+}
+
+message TokenInfo {
+  solidity.Address token_address = 1;
+  string name = 2;
+  string symbol = 3;
+  uint32 decimals = 4;
 }

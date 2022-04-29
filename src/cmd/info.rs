@@ -1,7 +1,9 @@
-use clap::{ArgMatches, Command};
+use bigdecimal::BigDecimal;
 use std::error::Error;
+use std::fmt::Write;
 
 use crate::cmd::{arg_url, ARG_URL};
+use clap::{ArgMatches, Command};
 use p2pim::proto::api::p2pim_client::P2pimClient;
 use p2pim::proto::api::{BalanceEntry, GetInfoRequest};
 
@@ -37,9 +39,36 @@ async fn run_info(rpc_url: String) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
-  let token_address: web3::types::Address = convert_or_err(entry.token.as_ref(), "missing token address")?;
-  let amount: web3::types::U256 = convert_or_err(entry.available.as_ref(), "missing available amount")?;
-  Ok(format!("  Token: {}, Amount: {}", token_address, amount))
+  let token = entry.token.as_ref().ok_or("missing token info")?;
+
+  let token_address: web3::types::Address = convert_or_err(token.token_address.as_ref(), "missing token address")?;
+  let token_name = &token.name;
+  let token_symbol = &token.symbol;
+
+  let mut result = {
+    if token_name.is_empty() {
+      format!("  Token at {}:\n", token_address)
+    } else {
+      let symbol = if token_symbol.is_empty() {
+        Default::default()
+      } else {
+        format!(" ({})", token_symbol)
+      };
+      format!("  {}{} at {}:\n", token_name, symbol, token_address)
+    }
+  };
+
+  let token_decimals = From::from(token.decimals);
+
+  let to_big_decimal = |v| BigDecimal::new(v, token_decimals);
+  let available = convert_or_err(entry.available.as_ref(), "missing available amount").map(to_big_decimal)?;
+  let allowed = convert_or_err(entry.allowed.as_ref(), "missing available amount").map(to_big_decimal)?;
+  let supplied = convert_or_err(entry.supplied.as_ref(), "missing available amount").map(to_big_decimal)?;
+
+  write!(result, "    Available: {}\n", available)?;
+  write!(result, "    Allowed  : {}\n", allowed)?;
+  write!(result, "    Supplied : {}\n", supplied)?;
+  Ok(result)
 }
 
 fn convert_or_err<I, O: From<I>, E>(input: Option<I>, err: E) -> Result<O, E> {

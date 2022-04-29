@@ -3,9 +3,11 @@ use std::future::Future;
 use std::net::SocketAddr;
 
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
-use crate::proto::api::{BalanceEntry, GetInfoRequest, GetInfoResponse};
+use crate::proto::api::{BalanceEntry, GetInfoRequest, GetInfoResponse, TokenInfo};
 use futures::StreamExt;
-use log::{debug, info};
+use log::{debug, info, warn};
+use p2pim_ethereum_contracts;
+use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use url::Url;
@@ -14,23 +16,14 @@ use web3::types::Address;
 #[derive(Clone, Debug)]
 struct P2pimImpl {
   account: web3::types::Address,
-  deployments: Vec<(web3::types::Address, p2pim_ethereum_contracts::P2pimAdjudicator)>,
+  deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
 }
 
 #[tonic::async_trait]
 impl P2pim for P2pimImpl {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
-      .then(|(token, adjudicator)| async move {
-        adjudicator
-          .balance(self.account)
-          .call()
-          .await
-          .map(|(available,)| BalanceEntry {
-            token: Some(From::from(token)),
-            available: Some(From::from(&available)),
-          })
-      })
+      .then(|(token, adjudicator)| async move { read_balances(self.account, token, adjudicator).await })
       .collect::<Vec<Result<BalanceEntry, _>>>()
       .await
       .into_iter()
@@ -42,6 +35,39 @@ impl P2pim for P2pimImpl {
       balance,
     }))
   }
+}
+
+async fn read_balances(
+  account: web3::types::Address,
+  token: &openzeppelin::IERC20Metadata,
+  adjudicator: &P2pimAdjudicator,
+) -> Result<BalanceEntry, ethcontract::errors::MethodError> {
+  fn ok_or_warn<R, E: std::fmt::Display>(result: Result<R, E>, method: &str, address: web3::types::Address) -> Option<R> {
+    if let Err(e) = result.as_ref() {
+      warn!("error calling `{}` method error={} address={}", method, e, address)
+    }
+    result.ok()
+  }
+
+  let supplied = adjudicator.balance(account).call().await?.0;
+  let name = ok_or_warn(token.name().call().await, "name", token.address());
+  let symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
+  let decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
+
+  let available = token.balance_of(account).call().await?;
+  let allowance = token.allowance(account, adjudicator.address()).call().await?;
+
+  Ok(BalanceEntry {
+    token: Some(TokenInfo {
+      token_address: Some(From::from(&token.address())),
+      name: name.unwrap_or(Default::default()),
+      decimals: From::from(decimals.unwrap_or(Default::default())),
+      symbol: symbol.unwrap_or(Default::default()),
+    }),
+    available: Some(From::from(&available)),
+    allowed: Some(From::from(&allowance)),
+    supplied: Some(From::from(&supplied)),
+  })
 }
 
 pub async fn listen_and_serve(
@@ -114,7 +140,12 @@ where
     .call()
     .await?
     .into_iter()
-    .map(|(token, adjudicator_addr)| (token, p2pim_ethereum_contracts::P2pimAdjudicator::at(&web3, adjudicator_addr)))
+    .map(|(token, adjudicator_addr)| {
+      (
+        openzeppelin::IERC20Metadata::at(&web3, token),
+        P2pimAdjudicator::at(&web3, adjudicator_addr),
+      )
+    })
     .collect();
   debug!("found deployments {:?}", deployments);
 

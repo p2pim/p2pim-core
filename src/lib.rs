@@ -25,6 +25,12 @@ pub mod proto {
       }
     }
 
+    impl From<&Uint256> for num_bigint::BigInt {
+      fn from(proto_u256: &Uint256) -> Self {
+        num_bigint::BigInt::from_bytes_le(num_bigint::Sign::Plus, proto_u256.data_le.as_slice())
+      }
+    }
+
     impl From<&web3::types::U256> for Uint256 {
       fn from(web3_u256: &web3::types::U256) -> Self {
         let mut available_u8: [u8; 4 * 8] = Default::default();
