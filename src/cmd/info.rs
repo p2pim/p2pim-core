@@ -32,7 +32,7 @@ async fn run_info(rpc_url: String) -> Result<(), Box<dyn std::error::Error>> {
     .map(format_balance)
     .collect::<Result<Vec<String>, _>>()
     .map(|bal| bal.join("\n"))?;
-  println!("Address: {}", address);
+  println!("Address: 0x{:x}", address);
   println!("Balances:");
   println!("{}", balance);
   Ok(())
@@ -47,14 +47,14 @@ fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
 
   let mut result = {
     if token_name.is_empty() {
-      format!("  Token at {}:\n", token_address)
+      format!("  Token at 0x{:x}:\n", token_address)
     } else {
       let symbol = if token_symbol.is_empty() {
         Default::default()
       } else {
         format!(" ({})", token_symbol)
       };
-      format!("  {}{} at {}:\n", token_name, symbol, token_address)
+      format!("  {}{} at 0x{:x}:\n", token_name, symbol, token_address)
     }
   };
 
