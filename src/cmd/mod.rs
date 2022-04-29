@@ -1,5 +1,6 @@
 use clap::Arg;
 
+pub mod approve;
 pub mod daemon;
 pub mod info;
 

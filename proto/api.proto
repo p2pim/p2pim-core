@@ -4,6 +4,7 @@ package api;
 
 service P2pim {
   rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+  rpc Approve (ApproveRequest) returns (ApproveResponse);
 }
 
 message GetInfoRequest {
@@ -26,4 +27,13 @@ message TokenInfo {
   string name = 2;
   string symbol = 3;
   uint32 decimals = 4;
+}
+
+message ApproveRequest {
+  solidity.Address token_address = 1;
+  solidity.Uint256 amount = 2;
+}
+
+message ApproveResponse {
+  solidity.H256 transaction_hash = 1;
 }

@@ -8,4 +8,8 @@ message Uint256 {
   bytes data_le = 1;
 }
 
+message H256 {
+  bytes data = 1;
+}
+
 

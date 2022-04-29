@@ -3,7 +3,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
-use crate::proto::api::{BalanceEntry, GetInfoRequest, GetInfoResponse, TokenInfo};
+use crate::proto::api::{ApproveRequest, ApproveResponse, BalanceEntry, GetInfoRequest, GetInfoResponse, TokenInfo};
 use futures::StreamExt;
 use log::{debug, info, warn};
 use p2pim_ethereum_contracts;
@@ -11,7 +11,7 @@ use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use url::Url;
-use web3::types::Address;
+use web3::types::{Address, U256};
 
 #[derive(Clone, Debug)]
 struct P2pimImpl {
@@ -34,6 +34,30 @@ impl P2pim for P2pimImpl {
       address: Some(From::from(&self.account)),
       balance,
     }))
+  }
+
+  async fn approve(&self, request: Request<ApproveRequest>) -> Result<Response<ApproveResponse>, Status> {
+    let token_addr = request
+      .get_ref()
+      .token_address
+      .as_ref()
+      .ok_or(Status::invalid_argument("token_address empty"))?
+      .into();
+
+    match self.deployments.iter().find(|(t, _)| t.address() == token_addr) {
+      None => Err(Status::invalid_argument("adjudicator not found for the token")),
+      Some((token, adjudicator)) => {
+        let result = token
+          .approve(adjudicator.address(), U256::max_value())
+          .confirmations(0)
+          .send()
+          .await
+          .map_err(|e| Status::internal(format!("error sending approval transaction: {}", e)))?;
+        Ok(Response::new(ApproveResponse {
+          transaction_hash: Some(From::from(result.hash())),
+        }))
+      }
+    }
   }
 }
 

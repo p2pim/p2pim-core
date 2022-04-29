@@ -19,6 +19,12 @@ pub mod proto {
       }
     }
 
+    impl From<web3::types::Address> for Address {
+      fn from(web3_address: web3::types::Address) -> Self {
+        From::from(&web3_address)
+      }
+    }
+
     impl From<&Uint256> for web3::types::U256 {
       fn from(proto_u256: &Uint256) -> Self {
         web3::types::U256::from_little_endian(proto_u256.data_le.as_slice())
@@ -38,6 +44,32 @@ pub mod proto {
         Uint256 {
           data_le: available_u8.to_vec(),
         }
+      }
+    }
+
+    impl From<web3::types::U256> for Uint256 {
+      fn from(web3_u256: web3::types::U256) -> Self {
+        From::from(&web3_u256)
+      }
+    }
+
+    impl From<&H256> for web3::types::H256 {
+      fn from(proto_h256: &H256) -> Self {
+        web3::types::H256::from_slice(proto_h256.data.as_slice())
+      }
+    }
+
+    impl From<&web3::types::H256> for H256 {
+      fn from(web3_h256: &web3::types::H256) -> Self {
+        H256 {
+          data: web3_h256.as_bytes().to_vec(),
+        }
+      }
+    }
+
+    impl From<web3::types::H256> for H256 {
+      fn from(web3_h256: web3::types::H256) -> Self {
+        From::from(&web3_h256)
       }
     }
   }
