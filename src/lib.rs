@@ -3,6 +3,8 @@ pub mod proto {
     tonic::include_proto!("api");
   }
   pub mod solidity {
+    use num_bigint::{BigInt, Sign};
+    use std::convert::TryFrom;
     tonic::include_proto!("solidity");
 
     impl From<&Address> for web3::types::Address {
@@ -34,6 +36,19 @@ pub mod proto {
     impl From<&Uint256> for num_bigint::BigInt {
       fn from(proto_u256: &Uint256) -> Self {
         num_bigint::BigInt::from_bytes_le(num_bigint::Sign::Plus, proto_u256.data_le.as_slice())
+      }
+    }
+
+    impl TryFrom<BigInt> for Uint256 {
+      type Error = String;
+
+      fn try_from(value: BigInt) -> Result<Self, Self::Error> {
+        if value.sign() == Sign::Minus {
+          Err("negative number".to_string())
+        } else {
+          let (_, bytes) = value.to_bytes_le();
+          Ok(Uint256 { data_le: bytes })
+        }
       }
     }
 

@@ -1,7 +1,9 @@
 use clap::Arg;
+use std::str::FromStr;
 
 pub mod approve;
 pub mod daemon;
+pub mod deposit;
 pub mod info;
 
 const ARG_URL: &str = "url";
@@ -14,4 +16,14 @@ fn arg_url() -> Arg<'static> {
     .value_name("URL")
     .default_value(ARG_URL_DEFAULT)
     .help("specify the url of the daemon")
+}
+
+const ARG_TOKEN: &str = "token";
+
+fn arg_token() -> Arg<'static> {
+  Arg::new(ARG_TOKEN)
+    .takes_value(true)
+    .required(true)
+    .validator(web3::types::Address::from_str)
+    .help("token to approve")
 }

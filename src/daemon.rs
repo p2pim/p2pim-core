@@ -3,7 +3,10 @@ use std::future::Future;
 use std::net::SocketAddr;
 
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
-use crate::proto::api::{ApproveRequest, ApproveResponse, BalanceEntry, GetInfoRequest, GetInfoResponse, TokenInfo};
+use crate::proto::api::{
+  ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
+  GetInfoRequest, GetInfoResponse, TokenInfo,
+};
 use futures::StreamExt;
 use log::{debug, info, warn};
 use p2pim_ethereum_contracts;
@@ -17,6 +20,12 @@ use web3::types::{Address, U256};
 struct P2pimImpl {
   account: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
+}
+
+impl P2pimImpl {
+  fn deployment(&self, token_addr: web3::types::Address) -> Option<&(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
+    self.deployments.iter().find(|(t, _)| t.address() == token_addr)
+  }
 }
 
 #[tonic::async_trait]
@@ -36,6 +45,22 @@ impl P2pim for P2pimImpl {
     }))
   }
 
+  async fn get_balance(&self, request: Request<GetBalanceRequest>) -> Result<Response<GetBalanceResponse>, Status> {
+    let token_addr = request
+      .get_ref()
+      .token_address
+      .as_ref()
+      .ok_or(Status::invalid_argument("token_address empty"))?
+      .into();
+    let (token, adjudicator) = self
+      .deployment(token_addr)
+      .ok_or(Status::not_found("adjudicator not found for the token"))?;
+    let balance = read_balances(token_addr, token, adjudicator)
+      .await
+      .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e.to_string())))?;
+    Ok(Response::new(GetBalanceResponse { balance: Some(balance) }))
+  }
+
   async fn approve(&self, request: Request<ApproveRequest>) -> Result<Response<ApproveResponse>, Status> {
     let token_addr = request
       .get_ref()
@@ -44,20 +69,48 @@ impl P2pim for P2pimImpl {
       .ok_or(Status::invalid_argument("token_address empty"))?
       .into();
 
-    match self.deployments.iter().find(|(t, _)| t.address() == token_addr) {
-      None => Err(Status::invalid_argument("adjudicator not found for the token")),
-      Some((token, adjudicator)) => {
-        let result = token
-          .approve(adjudicator.address(), U256::max_value())
-          .confirmations(0)
-          .send()
-          .await
-          .map_err(|e| Status::internal(format!("error sending approval transaction: {}", e)))?;
-        Ok(Response::new(ApproveResponse {
-          transaction_hash: Some(From::from(result.hash())),
-        }))
-      }
-    }
+    let (token, adjudicator) = self
+      .deployment(token_addr)
+      .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
+
+    let result = token
+      .approve(adjudicator.address(), U256::max_value())
+      .confirmations(0)
+      .send()
+      .await
+      .map_err(|e| Status::internal(format!("error sending approval transaction: {}", e)))?;
+    Ok(Response::new(ApproveResponse {
+      transaction_hash: Some(From::from(result.hash())),
+    }))
+  }
+
+  async fn deposit(&self, request: Request<DepositRequest>) -> Result<Response<DepositResponse>, Status> {
+    let token_addr = request
+      .get_ref()
+      .token_address
+      .as_ref()
+      .ok_or(Status::invalid_argument("token_address empty"))?
+      .into();
+
+    let amount = request
+      .get_ref()
+      .amount
+      .as_ref()
+      .ok_or(Status::invalid_argument("amount empty"))?
+      .into();
+
+    let (_, adjudicator) = self
+      .deployment(token_addr)
+      .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
+    let result = adjudicator
+      .deposit(amount, self.account)
+      .confirmations(0)
+      .send()
+      .await
+      .map_err(|e| Status::internal(format!("error sending deposit transaction: {}", e)))?;
+    Ok(Response::new(DepositResponse {
+      transaction_hash: Some(From::from(result.hash())),
+    }))
   }
 }
 

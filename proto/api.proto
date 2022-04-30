@@ -4,7 +4,9 @@ package api;
 
 service P2pim {
   rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+  rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
   rpc Approve (ApproveRequest) returns (ApproveResponse);
+  rpc Deposit (DepositRequest) returns (DepositResponse);
 }
 
 message GetInfoRequest {
@@ -29,11 +31,29 @@ message TokenInfo {
   uint32 decimals = 4;
 }
 
+message GetBalanceRequest {
+  solidity.Address token_address = 1;
+}
+
+message GetBalanceResponse {
+  BalanceEntry balance = 1;
+}
+
+
 message ApproveRequest {
   solidity.Address token_address = 1;
   solidity.Uint256 amount = 2;
 }
 
 message ApproveResponse {
+  solidity.H256 transaction_hash = 1;
+}
+
+message DepositRequest {
+  solidity.Address token_address = 1;
+  solidity.Uint256 amount = 2;
+}
+
+message DepositResponse {
   solidity.H256 transaction_hash = 1;
 }

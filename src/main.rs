@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn Error>> {
   let result = match matches.subcommand() {
     Some(("approve", m)) => cmd::approve::run(m),
     Some(("daemon", m)) => cmd::daemon::run(m),
+    Some(("deposit", m)) => cmd::deposit::run(m),
     Some(("info", m)) => cmd::info::run(m),
     _ => unreachable!("this should not happen if we have all the cases covered"),
   };
@@ -20,7 +21,8 @@ fn cli() -> Command<'static> {
     .about("P2pim decentralized storage")
     .subcommand_required(true)
     .arg_required_else_help(true)
-    .subcommand(cmd::daemon::command())
-    .subcommand(cmd::info::command())
     .subcommand(cmd::approve::command())
+    .subcommand(cmd::daemon::command())
+    .subcommand(cmd::deposit::command())
+    .subcommand(cmd::info::command())
 }
