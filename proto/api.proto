@@ -39,7 +39,6 @@ message GetBalanceResponse {
   BalanceEntry balance = 1;
 }
 
-
 message ApproveRequest {
   solidity.Address token_address = 1;
   solidity.Uint256 amount = 2;

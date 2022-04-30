@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use clap::{Arg, ArgMatches, Command};
+use p2pim::daemon::DaemonOpts;
 
 const ARG_ETH_ADDRESS: &str = "eth.address";
 
@@ -46,15 +47,17 @@ fn arg_eth_master() -> Arg<'static> {
 }
 
 pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
-  let eth_addr = matches.value_of_t(ARG_ETH_ADDRESS)?;
-  let rpc_addr = matches.value_of_t(ARG_RPC_ADDRESS)?;
-  let master_addr = matches
-    .value_of(ARG_ETH_MASTER)
-    .map(web3::types::Address::from_str)
-    .transpose()?;
+  let daemon_opts = DaemonOpts {
+    eth_addr: matches.value_of_t(ARG_ETH_ADDRESS)?,
+    rpc_addr: matches.value_of_t(ARG_RPC_ADDRESS)?,
+    master_addr: matches
+      .value_of(ARG_ETH_MASTER)
+      .map(web3::types::Address::from_str)
+      .transpose()?,
+  };
   tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()
     .unwrap()
-    .block_on(p2pim::daemon::listen_and_serve(eth_addr, rpc_addr, master_addr))
+    .block_on(p2pim::daemon::listen_and_serve(daemon_opts))
 }
