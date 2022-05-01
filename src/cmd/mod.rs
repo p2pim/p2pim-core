@@ -5,6 +5,7 @@ pub mod approve;
 pub mod daemon;
 pub mod deposit;
 pub mod info;
+pub mod swarm;
 
 const ARG_URL: &str = "url";
 const ARG_URL_DEFAULT: &str = "http://127.0.0.1:8122";

@@ -9,7 +9,22 @@ service P2pim {
   rpc Deposit (DepositRequest) returns (DepositResponse);
 }
 
+service Swarm {
+  rpc GetConnectedPeers (GetConnectedPeersRequest) returns (GetConnectedPeersResponse);
+}
+
+message GetConnectedPeersRequest {
+}
+
+message GetConnectedPeersResponse {
+  repeated PeerId peer_list = 1;
+}
+
 message GetInfoRequest {
+}
+
+message PeerId {
+  bytes data = 1;
 }
 
 message GetInfoResponse {

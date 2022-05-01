@@ -1,16 +1,19 @@
+use std::error::Error;
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
+use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
-  GetInfoRequest, GetInfoResponse, TokenInfo,
+  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, PeerId, TokenInfo,
 };
 use futures::StreamExt;
 use log::{info, warn};
 use p2pim_ethereum_contracts;
 use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
-use tonic::transport::{Error, Server};
+use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use web3::types::U256;
 
@@ -18,13 +21,17 @@ pub async fn listen_and_serve(
   rpc_addr: SocketAddr,
   account: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
-) -> Result<(), Error> {
+  swarm: Arc<Mutex<libp2p::swarm::Swarm<impl libp2p::swarm::NetworkBehaviour + Send>>>,
+) -> Result<(), Box<dyn Error>> {
   info!("starting gRPC server on {}", rpc_addr);
   let p2pim_impl = P2pimImpl { account, deployments };
+  let swarm_impl = SwarmImpl { swarm };
   Server::builder()
     .add_service(P2pimServer::new(p2pim_impl))
+    .add_service(SwarmServer::new(swarm_impl))
     .serve(rpc_addr)
     .await
+    .map_err(|e| e.into())
 }
 
 #[derive(Clone, Debug)]
@@ -156,4 +163,20 @@ async fn read_balances(
     allowed: Some(From::from(&allowance)),
     supplied: Some(From::from(&supplied)),
   })
+}
+
+struct SwarmImpl<T: libp2p::swarm::NetworkBehaviour + Send> {
+  swarm: Arc<Mutex<libp2p::swarm::Swarm<T>>>,
+}
+
+#[tonic::async_trait]
+impl<T: libp2p::swarm::NetworkBehaviour + Send> Swarm for SwarmImpl<T> {
+  async fn get_connected_peers(
+    &self,
+    _: Request<GetConnectedPeersRequest>,
+  ) -> Result<Response<GetConnectedPeersResponse>, Status> {
+    let swarm = self.swarm.lock().unwrap();
+    let peer_list = swarm.connected_peers().map(|p| PeerId { data: p.to_bytes() }).collect();
+    Ok(Response::new(GetConnectedPeersResponse { peer_list }))
+  }
 }

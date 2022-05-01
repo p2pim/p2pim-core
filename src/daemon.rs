@@ -1,7 +1,14 @@
+use futures::future::try_join_all;
+use libp2p::identity::Keypair;
+use std::convert::identity;
+use std::error::Error;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
-use log::{debug, info};
+use log::{debug, info, trace};
 use p2pim_ethereum_contracts;
 use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 use url::Url;
@@ -9,8 +16,8 @@ use web3::types::Address;
 
 pub struct DaemonOpts {
   pub eth_addr: Url,
-  pub rpc_addr: SocketAddr,
   pub master_addr: Option<Address>,
+  pub rpc_addr: SocketAddr,
 }
 
 pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error::Error>> {
@@ -89,6 +96,30 @@ where
     .collect();
   debug!("found deployments {:?}", deployments);
 
-  crate::grpc::listen_and_serve(rpc_addr, account, deployments).await?;
-  Ok(())
+  let keypair = Keypair::generate_secp256k1();
+  let swarm = Arc::new(Mutex::new(crate::p2p::create_swarm(keypair).await?));
+
+  type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
+
+  let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
+    rpc_addr,
+    account,
+    deployments,
+    Arc::clone(&swarm),
+  ));
+
+  let p2p_fut = futures::future::poll_fn(move |ctx| {
+    let mut s = swarm.lock().unwrap();
+    while let Poll::Ready(ev) = futures::stream::StreamExt::poll_next_unpin(&mut *s, ctx) {
+      match ev {
+        None => return Poll::Ready(Ok(())),
+        Some(e) => trace!("swarm event: {:?}", e),
+      }
+    }
+    Poll::Pending
+  });
+
+  let p2p: ServeFuture = Box::pin(p2p_fut);
+  let futures: Vec<ServeFuture> = vec![Some(p2p), Some(grpc)].into_iter().filter_map(identity).collect();
+  try_join_all(futures).await.map(|_| ())
 }
