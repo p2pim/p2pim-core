@@ -18,6 +18,7 @@ pub struct DaemonOpts {
   pub eth_addr: Url,
   pub master_addr: Option<Address>,
   pub rpc_addr: SocketAddr,
+  pub s3_addr: Option<SocketAddr>,
 }
 
 pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +28,7 @@ pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error
         &opts.eth_addr,
         opts.rpc_addr,
         opts.master_addr,
+        opts.s3_addr,
         web3::transports::ipc::Ipc::new(opts.eth_addr.path()),
       )
       .await
@@ -36,6 +38,7 @@ pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error
         &opts.eth_addr,
         opts.rpc_addr,
         opts.master_addr,
+        opts.s3_addr,
         web3::transports::ws::WebSocket::new(opts.eth_addr.as_str()),
       )
       .await
@@ -48,6 +51,7 @@ async fn listen_and_serve1<F, B, T>(
   eth_addr: &Url,
   rpc_addr: SocketAddr,
   master_addr: Option<Address>,
+  s3_addr: Option<SocketAddr>,
   transport_fut: impl Future<Output = Result<T, web3::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -120,6 +124,7 @@ where
   });
 
   let p2p: ServeFuture = Box::pin(p2p_fut);
-  let futures: Vec<ServeFuture> = vec![Some(p2p), Some(grpc)].into_iter().filter_map(identity).collect();
+  let s3 = s3_addr.map::<ServeFuture, _>(|addr| Box::pin(crate::s3::listen_and_serve(addr)));
+  let futures: Vec<ServeFuture> = vec![Some(p2p), Some(grpc), s3].into_iter().filter_map(identity).collect();
   try_join_all(futures).await.map(|_| ())
 }

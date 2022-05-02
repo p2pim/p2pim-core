@@ -93,3 +93,4 @@ pub mod proto {
 pub mod daemon;
 pub mod grpc;
 pub mod p2p;
+pub mod s3;
