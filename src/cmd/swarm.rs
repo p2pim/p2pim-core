@@ -46,6 +46,10 @@ async fn run_peers_async(rpc_url: String) -> Result<(), Box<dyn std::error::Erro
     .map(|(i, p)| PeerId::from_bytes(p.data.as_slice()).map(|c| format!("{}: {}", i, c.to_string())))
     .collect::<Result<Vec<String>, _>>()?
     .join("\n");
-  println!("{}", result);
+  if result.is_empty() {
+    println!("no peers")
+  } else {
+    println!("{}", result);
+  }
   Ok(())
 }
