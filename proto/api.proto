@@ -28,8 +28,9 @@ message PeerId {
 }
 
 message GetInfoResponse {
-  solidity.Address address = 1;
-  repeated BalanceEntry balance = 2;
+  solidity.Address address_wallet = 1;
+  solidity.Address address_storage = 2;
+  repeated BalanceEntry balance = 3;
 }
 
 message BalanceEntry {

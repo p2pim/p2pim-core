@@ -1,5 +1,5 @@
 use futures::future::try_join_all;
-use libp2p::identity::Keypair;
+use libp2p::identity::{secp256k1, Keypair};
 use std::convert::identity;
 use std::error::Error;
 use std::future::Future;
@@ -8,6 +8,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
+use crate::utils::ethereum::public_key_to_address;
 use log::{debug, info, trace};
 use p2pim_ethereum_contracts;
 use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
@@ -80,8 +81,8 @@ where
 
   debug!("reading accounts");
   let accounts = web3.eth().accounts().await?;
-  let account = accounts.get(0).map(Clone::clone).ok_or("no accounts configured")?;
-  debug!("using account {:?}", account);
+  let account_wallet = accounts.get(0).map(Clone::clone).ok_or("no accounts configured")?;
+  debug!("using account for wallet {:?}", account_wallet);
 
   // TODO react to new deployments
   debug!("reading master record deployments");
@@ -100,14 +101,17 @@ where
     .collect();
   debug!("found deployments {:?}", deployments);
 
-  let keypair = Keypair::generate_secp256k1();
+  let secp256k1_keypair = secp256k1::Keypair::generate();
+  let keypair = Keypair::Secp256k1(secp256k1_keypair.clone());
+  let account_storage = public_key_to_address(secp256k1_keypair.public());
   let swarm = Arc::new(Mutex::new(crate::p2p::create_swarm(keypair).await?));
 
   type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
-    account,
+    account_wallet,
+    account_storage,
     deployments,
     Arc::clone(&swarm),
   ));

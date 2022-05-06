@@ -19,12 +19,17 @@ use web3::types::U256;
 
 pub async fn listen_and_serve(
   rpc_addr: SocketAddr,
-  account: web3::types::Address,
+  account_wallet: web3::types::Address,
+  account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   swarm: Arc<Mutex<libp2p::swarm::Swarm<impl libp2p::swarm::NetworkBehaviour + Send>>>,
 ) -> Result<(), Box<dyn Error>> {
   info!("starting gRPC server on {}", rpc_addr);
-  let p2pim_impl = P2pimImpl { account, deployments };
+  let p2pim_impl = P2pimImpl {
+    account_wallet,
+    account_storage,
+    deployments,
+  };
   let swarm_impl = SwarmImpl { swarm };
   Server::builder()
     .add_service(P2pimServer::new(p2pim_impl))
@@ -36,7 +41,8 @@ pub async fn listen_and_serve(
 
 #[derive(Clone, Debug)]
 struct P2pimImpl {
-  account: web3::types::Address,
+  account_wallet: web3::types::Address,
+  account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
 }
 
@@ -50,7 +56,9 @@ impl P2pimImpl {
 impl P2pim for P2pimImpl {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
-      .then(|(token, adjudicator)| async move { read_balances(self.account, token, adjudicator).await })
+      .then(|(token, adjudicator)| async move {
+        read_balances(self.account_wallet, self.account_storage, token, adjudicator).await
+      })
       .collect::<Vec<Result<BalanceEntry, _>>>()
       .await
       .into_iter()
@@ -58,7 +66,8 @@ impl P2pim for P2pimImpl {
       .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e.to_string())))?;
 
     Ok(Response::new(GetInfoResponse {
-      address: Some(From::from(&self.account)),
+      address_wallet: Some(From::from(&self.account_wallet)),
+      address_storage: Some(From::from(&self.account_storage)),
       balance,
     }))
   }
@@ -73,7 +82,7 @@ impl P2pim for P2pimImpl {
     let (token, adjudicator) = self
       .deployment(token_addr)
       .ok_or(Status::not_found("adjudicator not found for the token"))?;
-    let balance = read_balances(token_addr, token, adjudicator)
+    let balance = read_balances(self.account_wallet, self.account_storage, token, adjudicator)
       .await
       .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e.to_string())))?;
     Ok(Response::new(GetBalanceResponse { balance: Some(balance) }))
@@ -121,7 +130,7 @@ impl P2pim for P2pimImpl {
       .deployment(token_addr)
       .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
     let result = adjudicator
-      .deposit(amount, self.account)
+      .deposit(amount, self.account_storage)
       .confirmations(0)
       .send()
       .await
@@ -133,7 +142,8 @@ impl P2pim for P2pimImpl {
 }
 
 async fn read_balances(
-  account: web3::types::Address,
+  account_wallet: web3::types::Address,
+  account_storage: web3::types::Address,
   token: &openzeppelin::IERC20Metadata,
   adjudicator: &P2pimAdjudicator,
 ) -> Result<BalanceEntry, ethcontract::errors::MethodError> {
@@ -144,13 +154,13 @@ async fn read_balances(
     result.ok()
   }
 
-  let supplied = adjudicator.balance(account).call().await?.0;
+  let supplied = adjudicator.balance(account_storage).call().await?.0;
   let name = ok_or_warn(token.name().call().await, "name", token.address());
   let symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
   let decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
 
-  let available = token.balance_of(account).call().await?;
-  let allowance = token.allowance(account, adjudicator.address()).call().await?;
+  let available = token.balance_of(account_wallet).call().await?;
+  let allowance = token.allowance(account_wallet, adjudicator.address()).call().await?;
 
   Ok(BalanceEntry {
     token: Some(TokenInfo {
