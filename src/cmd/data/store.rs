@@ -10,6 +10,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use web3::types::H256;
 
+pub const STORE_CMD: &str = "store";
+
 const ARG_DATA_FILE: &str = "data_file";
 const ARG_DURATION: &str = "duration";
 const ARG_PEER_ID: &str = "peer";
@@ -17,8 +19,8 @@ const ARG_PENALTY: &str = "penalty";
 const ARG_PRICE: &str = "price";
 
 pub fn command() -> Command<'static> {
-  Command::new("store")
-    .about("store")
+  Command::new(STORE_CMD)
+    .about("store data in a peer")
     .arg(arg_url())
     .arg(arg_peer_id())
     .arg(arg_token().long(ARG_TOKEN))
