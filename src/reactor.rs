@@ -6,7 +6,7 @@ use crate::{data, onchain, p2p};
 use ethcontract::transaction::TransactionResult;
 use futures::StreamExt;
 use libp2p::PeerId;
-use log::{trace, warn};
+use log::{info, trace, warn};
 use std::error::Error;
 use std::future::Future;
 use std::ops::Deref;
@@ -149,7 +149,7 @@ where
     .ok_or("peer id not found")?;
   let data_parameters = data.parameters(proposal.data.as_slice()).await;
 
-  onchain
+  let result = onchain
     .seal_lease(
       lessee_address,
       proposal.nonce,
@@ -157,5 +157,7 @@ where
       data_parameters,
       proposal.signature,
     )
-    .await
+    .await?;
+  info!("lease sealed peer_id={} transaction_result={:?}", peer_id, result);
+  Ok(result)
 }
