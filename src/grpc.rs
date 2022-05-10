@@ -1,14 +1,19 @@
+use std::convert::TryInto;
 use std::error::Error;
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
 use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
-  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, PeerId, TokenInfo,
+  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, StoreRequest, StoreResponse,
+  TokenInfo,
 };
+use crate::proto::libp2p::PeerId;
+use crate::types::LeaseTerms;
+use crate::{p2p, reactor};
 use futures::StreamExt;
 use log::{info, warn};
 use p2pim_ethereum_contracts;
@@ -17,20 +22,26 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use web3::types::U256;
 
-pub async fn listen_and_serve(
+pub async fn listen_and_serve<TReactor, TP2p>(
   rpc_addr: SocketAddr,
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
-  swarm: Arc<Mutex<libp2p::swarm::Swarm<impl libp2p::swarm::NetworkBehaviour + Send>>>,
-) -> Result<(), Box<dyn Error>> {
+  p2p: TP2p,
+  reactor: TReactor,
+) -> Result<(), Box<dyn Error>>
+where
+  TReactor: reactor::Service,
+  TP2p: p2p::Service,
+{
   info!("starting gRPC server on {}", rpc_addr);
   let p2pim_impl = P2pimImpl {
     account_wallet,
     account_storage,
     deployments,
+    reactor,
   };
-  let swarm_impl = SwarmImpl { swarm };
+  let swarm_impl = SwarmImpl { p2p };
   Server::builder()
     .add_service(P2pimServer::new(p2pim_impl))
     .add_service(SwarmServer::new(swarm_impl))
@@ -40,20 +51,30 @@ pub async fn listen_and_serve(
 }
 
 #[derive(Clone, Debug)]
-struct P2pimImpl {
+struct P2pimImpl<TReactor>
+where
+  TReactor: reactor::Service,
+{
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
+  reactor: TReactor,
 }
 
-impl P2pimImpl {
+impl<TReactor> P2pimImpl<TReactor>
+where
+  TReactor: reactor::Service,
+{
   fn deployment(&self, token_addr: web3::types::Address) -> Option<&(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
     self.deployments.iter().find(|(t, _)| t.address() == token_addr)
   }
 }
 
 #[tonic::async_trait]
-impl P2pim for P2pimImpl {
+impl<TReactor> P2pim for P2pimImpl<TReactor>
+where
+  TReactor: reactor::Service,
+{
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
       .then(|(token, adjudicator)| async move {
@@ -112,15 +133,14 @@ impl P2pim for P2pimImpl {
   }
 
   async fn deposit(&self, request: Request<DepositRequest>) -> Result<Response<DepositResponse>, Status> {
-    let token_addr = request
-      .get_ref()
+    let dep_req = request.get_ref();
+    let token_addr = dep_req
       .token_address
       .as_ref()
       .ok_or(Status::invalid_argument("token_address empty"))?
       .into();
 
-    let amount = request
-      .get_ref()
+    let amount = dep_req
       .amount
       .as_ref()
       .ok_or(Status::invalid_argument("amount empty"))?
@@ -137,6 +157,42 @@ impl P2pim for P2pimImpl {
       .map_err(|e| Status::internal(format!("error sending deposit transaction: {}", e)))?;
     Ok(Response::new(DepositResponse {
       transaction_hash: Some(From::from(result.hash())),
+    }))
+  }
+
+  async fn store(&self, request: Request<StoreRequest>) -> Result<Response<StoreResponse>, Status> {
+    let req = request.into_inner();
+    let peer_id = req
+      .peer_id
+      .as_ref()
+      .ok_or(Status::invalid_argument("peer_id empty"))?
+      .try_into()
+      .map_err(|e| Status::invalid_argument(format!("invalid peer id: {}", e)))?;
+
+    let lease_term = LeaseTerms {
+      lease_duration: req
+        .lease_duration
+        .clone()
+        .ok_or(Status::invalid_argument("lease duration empty"))?
+        .try_into()
+        .map_err(|_| Status::invalid_argument("duration should be positive value"))?,
+      token_address: req
+        .token_address
+        .as_ref()
+        .ok_or(Status::invalid_argument("token address empty"))?
+        .into(),
+      proposal_expiration: SystemTime::now() + Duration::from_secs(120), // TODO fixed 2 minutes, this needs to be a parameter
+      price: req.price.as_ref().ok_or(Status::invalid_argument("price empty"))?.into(),
+      penalty: req.penalty.as_ref().ok_or(Status::invalid_argument("penalty empty"))?.into(),
+    };
+
+    let result = self
+      .reactor
+      .lease(peer_id, lease_term, req.data)
+      .await
+      .map_err(|e| Status::unknown(format!("Error trying to store: {}", e)))?;
+    Ok(Response::new(StoreResponse {
+      transaction_hash: Some(result.into()),
     }))
   }
 }
@@ -175,18 +231,28 @@ async fn read_balances(
   })
 }
 
-struct SwarmImpl<T: libp2p::swarm::NetworkBehaviour + Send> {
-  swarm: Arc<Mutex<libp2p::swarm::Swarm<T>>>,
+struct SwarmImpl<TP2p>
+where
+  TP2p: p2p::Service,
+{
+  p2p: TP2p,
 }
 
 #[tonic::async_trait]
-impl<T: libp2p::swarm::NetworkBehaviour + Send> Swarm for SwarmImpl<T> {
+impl<TP2p> Swarm for SwarmImpl<TP2p>
+where
+  TP2p: p2p::Service,
+{
   async fn get_connected_peers(
     &self,
     _: Request<GetConnectedPeersRequest>,
   ) -> Result<Response<GetConnectedPeersResponse>, Status> {
-    let swarm = self.swarm.lock().unwrap();
-    let peer_list = swarm.connected_peers().map(|p| PeerId { data: p.to_bytes() }).collect();
+    let peer_list = self
+      .p2p
+      .known_peers()
+      .into_iter()
+      .map(|p| PeerId { data: p.to_bytes() })
+      .collect();
     Ok(Response::new(GetConnectedPeersResponse { peer_list }))
   }
 }

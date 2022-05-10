@@ -1,5 +1,7 @@
 syntax = "proto3";
+import "google/protobuf/duration.proto";
 import "solidity.proto";
+import "libp2p.proto";
 package api;
 
 service P2pim {
@@ -7,6 +9,20 @@ service P2pim {
   rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
   rpc Approve (ApproveRequest) returns (ApproveResponse);
   rpc Deposit (DepositRequest) returns (DepositResponse);
+  rpc Store (StoreRequest) returns (StoreResponse);
+}
+
+message StoreRequest {
+  libp2p.PeerId peer_id = 1;
+  solidity.Address token_address = 2;
+  solidity.Uint256 price = 3;
+  solidity.Uint256 penalty = 4;
+  google.protobuf.Duration lease_duration = 5;
+  bytes data = 1000;
+}
+
+message StoreResponse {
+  solidity.H256 transaction_hash = 1;
 }
 
 service Swarm {
@@ -17,14 +33,10 @@ message GetConnectedPeersRequest {
 }
 
 message GetConnectedPeersResponse {
-  repeated PeerId peer_list = 1;
+  repeated libp2p.PeerId peer_list = 1;
 }
 
 message GetInfoRequest {
-}
-
-message PeerId {
-  bytes data = 1;
 }
 
 message GetInfoResponse {

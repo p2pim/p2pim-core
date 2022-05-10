@@ -5,6 +5,7 @@ pub mod approve;
 pub mod daemon;
 pub mod deposit;
 pub mod info;
+pub mod store;
 pub mod swarm;
 
 const ARG_URL: &str = "url";

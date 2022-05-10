@@ -1,0 +1,6 @@
+syntax = "proto3";
+package multiformats;
+
+message Cid {
+  bytes data = 1;
+}

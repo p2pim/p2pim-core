@@ -12,4 +12,6 @@ message H256 {
   bytes data = 1;
 }
 
-
+message Bytes32 {
+  bytes data = 1;
+}

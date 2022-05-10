@@ -1,0 +1,34 @@
+syntax = "proto3";
+import "multiformats.proto";
+import "solidity.proto";
+package p2p;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+message ProtocolMessage {
+  oneof message {
+    LeaseProposal lease_proposal = 1;
+    LeaseRejection lease_rejection = 2;
+  }
+}
+
+message LeaseProposal {
+  message LeaseTerms {
+    solidity.Address token_address = 1;
+    solidity.Uint256 price = 2;
+    solidity.Uint256 penalty = 3;
+    google.protobuf.Timestamp proposal_expiration = 4;
+    google.protobuf.Duration lease_duration = 5;
+  }
+
+  uint64 nonce = 1;
+  LeaseTerms lease_terms = 2;
+  bytes signature = 500;
+  bytes data = 1000;
+}
+
+message LeaseRejection {
+  uint64 nonce = 1;
+  string reason = 2;
+}

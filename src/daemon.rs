@@ -1,19 +1,18 @@
+use crate::utils::ethereum::IntoAddress;
+use crate::{onchain, p2p};
 use futures::future::try_join_all;
 use libp2p::identity::{secp256k1, Keypair};
+use log::{debug, info};
+use p2pim_ethereum_contracts;
+use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 use std::convert::identity;
 use std::error::Error;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::Poll;
-
-use crate::utils::ethereum::public_key_to_address;
-use log::{debug, info, trace};
-use p2pim_ethereum_contracts;
-use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 use url::Url;
 use web3::types::Address;
+use web3::DuplexTransport;
 
 pub struct DaemonOpts {
   pub eth_addr: Url,
@@ -58,7 +57,8 @@ async fn listen_and_serve1<F, B, T>(
 where
   F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
   B: std::future::Future<Output = web3::Result<Vec<web3::Result<serde_json::Value>>>> + Send + 'static,
-  T: web3::Transport<Out = F> + web3::BatchTransport<Batch = B> + Send + Sync + 'static,
+  T: web3::Transport<Out = F> + web3::BatchTransport<Batch = B> + DuplexTransport + Send + Sync + 'static,
+  <T as DuplexTransport>::NotificationStream: std::marker::Send + Unpin,
 {
   info!("initializing p2pim");
 
@@ -103,32 +103,37 @@ where
 
   let secp256k1_keypair = secp256k1::Keypair::generate();
   let keypair = Keypair::Secp256k1(secp256k1_keypair.clone());
-  let account_storage = public_key_to_address(secp256k1_keypair.public());
-  let swarm = Arc::new(Mutex::new(crate::p2p::create_swarm(keypair).await?));
+  let account_storage = secp256k1_keypair.public().into_address();
+  let p2p = p2p::create_p2p(keypair).await?;
 
   type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
+
+  let data = crate::data::new_service();
+  let private_key_raw = secp256k1_keypair.secret().to_bytes();
+  let onchain = crate::onchain::new_service(
+    onchain::OnchainParams {
+      private_key: private_key_raw,
+      master_address: master_addr.clone(),
+    },
+    web3,
+  )
+  .await?;
+  let (reactor, reactor_fut) = crate::reactor::new_service(data, onchain, p2p.clone());
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
     account_wallet,
     account_storage,
     deployments,
-    Arc::clone(&swarm),
+    p2p.clone(),
+    reactor.clone(),
   ));
 
-  let p2p_fut = futures::future::poll_fn(move |ctx| {
-    let mut s = swarm.lock().unwrap();
-    while let Poll::Ready(ev) = futures::stream::StreamExt::poll_next_unpin(&mut *s, ctx) {
-      match ev {
-        None => return Poll::Ready(Ok(())),
-        Some(e) => trace!("swarm event: {:?}", e),
-      }
-    }
-    Poll::Pending
-  });
-
-  let p2p: ServeFuture = Box::pin(p2p_fut);
   let s3 = s3_addr.map::<ServeFuture, _>(|addr| Box::pin(crate::s3::listen_and_serve(addr)));
-  let futures: Vec<ServeFuture> = vec![Some(p2p), Some(grpc), s3].into_iter().filter_map(identity).collect();
+  let reactor_fut2: ServeFuture = Box::pin(futures::FutureExt::map(reactor_fut, Result::Ok));
+  let futures: Vec<ServeFuture> = vec![Some(reactor_fut2), Some(grpc), s3]
+    .into_iter()
+    .filter_map(identity)
+    .collect();
   try_join_all(futures).await.map(|_| ())
 }

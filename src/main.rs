@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Some(("daemon", m)) => cmd::daemon::run(m),
     Some(("deposit", m)) => cmd::deposit::run(m),
     Some(("info", m)) => cmd::info::run(m),
+    Some(("store", m)) => cmd::store::run(m),
     Some(("swarm", m)) => cmd::swarm::run(m),
     _ => unreachable!("this should not happen if we have all the cases covered"),
   };
@@ -26,5 +27,6 @@ fn cli() -> Command<'static> {
     .subcommand(cmd::daemon::command())
     .subcommand(cmd::deposit::command())
     .subcommand(cmd::info::command())
+    .subcommand(cmd::store::command())
     .subcommand(cmd::swarm::command())
 }
