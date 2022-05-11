@@ -136,6 +136,7 @@ pub mod grpc;
 pub mod libp2p;
 pub mod onchain;
 pub mod p2p;
+pub mod persistence;
 pub mod reactor;
 pub mod s3;
 pub mod types;

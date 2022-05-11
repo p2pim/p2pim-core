@@ -1,5 +1,6 @@
 syntax = "proto3";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 import "solidity.proto";
 import "libp2p.proto";
 package api;
@@ -10,6 +11,32 @@ service P2pim {
   rpc Approve (ApproveRequest) returns (ApproveResponse);
   rpc Deposit (DepositRequest) returns (DepositResponse);
   rpc Store (StoreRequest) returns (StoreResponse);
+  rpc ListStorageRented (ListStorageRentedRequest) returns (ListStorageRentedResponse);
+  // rpc ListStorageLet (ListSotorageLetRequest) returns (ListStorageLetResponse);
+}
+
+service Swarm {
+  rpc GetConnectedPeers (GetConnectedPeersRequest) returns (GetConnectedPeersResponse);
+}
+
+message ListStorageRentedRequest {
+
+}
+
+message ListStorageRentedResponse {
+  message StorageRentedData {
+    libp2p.PeerId peer_id = 1;
+    uint64 nonce = 2;
+    // TODO this is the same than in p2p.proto LeaseTerms
+    solidity.Address token_address = 3;
+    solidity.Uint256 price = 4;
+    solidity.Uint256 penalty = 5;
+    google.protobuf.Timestamp proposal_expiration = 6;
+    google.protobuf.Duration lease_duration = 7;
+    solidity.H256 transaction_hash = 8;
+    google.protobuf.Timestamp lease_started = 9;
+  }
+  repeated StorageRentedData storage_rented_data = 1;
 }
 
 message StoreRequest {
@@ -23,10 +50,6 @@ message StoreRequest {
 
 message StoreResponse {
   solidity.H256 transaction_hash = 1;
-}
-
-service Swarm {
-  rpc GetConnectedPeers (GetConnectedPeersRequest) returns (GetConnectedPeersResponse);
 }
 
 message GetConnectedPeersRequest {

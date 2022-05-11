@@ -118,7 +118,10 @@ where
     web3,
   )
   .await?;
-  let (reactor, reactor_fut) = crate::reactor::new_service(data, onchain, p2p.clone());
+
+  let persistence = crate::persistence::new_service();
+
+  let (reactor, reactor_fut) = crate::reactor::new_service(data, onchain, p2p.clone(), persistence.clone());
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
@@ -127,6 +130,7 @@ where
     deployments,
     p2p.clone(),
     reactor.clone(),
+    persistence.clone(),
   ));
 
   let s3 = s3_addr.map::<ServeFuture, _>(|addr| Box::pin(crate::s3::listen_and_serve(addr)));

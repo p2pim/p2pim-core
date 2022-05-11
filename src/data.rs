@@ -1,10 +1,6 @@
+use crate::types::DataParameters;
 use crate::utils::merkle::MerkleTree;
 use tonic::async_trait;
-
-pub struct DataParameters {
-  pub merkle_root: Vec<u8>,
-  pub size: usize,
-}
 
 #[async_trait]
 pub trait Service: Send + Sync + Unpin + Clone + 'static {

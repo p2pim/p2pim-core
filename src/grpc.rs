@@ -4,16 +4,17 @@ use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
+use crate::proto::api::list_storage_rented_response::StorageRentedData;
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
 use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
-  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, StoreRequest, StoreResponse,
-  TokenInfo,
+  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, ListStorageRentedRequest,
+  ListStorageRentedResponse, StoreRequest, StoreResponse, TokenInfo,
 };
 use crate::proto::libp2p::PeerId;
 use crate::types::LeaseTerms;
-use crate::{p2p, reactor};
+use crate::{p2p, persistence, reactor};
 use futures::StreamExt;
 use log::{info, warn};
 use p2pim_ethereum_contracts;
@@ -22,17 +23,19 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use web3::types::U256;
 
-pub async fn listen_and_serve<TReactor, TP2p>(
+pub async fn listen_and_serve<TReactor, TP2p, TPersistence>(
   rpc_addr: SocketAddr,
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   p2p: TP2p,
   reactor: TReactor,
+  persistence: TPersistence,
 ) -> Result<(), Box<dyn Error>>
 where
   TReactor: reactor::Service,
   TP2p: p2p::Service,
+  TPersistence: persistence::Service,
 {
   info!("starting gRPC server on {}", rpc_addr);
   let p2pim_impl = P2pimImpl {
@@ -40,6 +43,7 @@ where
     account_storage,
     deployments,
     reactor,
+    persistence,
   };
   let swarm_impl = SwarmImpl { p2p };
   Server::builder()
@@ -51,19 +55,22 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct P2pimImpl<TReactor>
+struct P2pimImpl<TReactor, TPersistence>
 where
   TReactor: reactor::Service,
+  TPersistence: persistence::Service,
 {
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   reactor: TReactor,
+  persistence: TPersistence,
 }
 
-impl<TReactor> P2pimImpl<TReactor>
+impl<TReactor, TPersistence> P2pimImpl<TReactor, TPersistence>
 where
   TReactor: reactor::Service,
+  TPersistence: persistence::Service,
 {
   fn deployment(&self, token_addr: web3::types::Address) -> Option<&(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
     self.deployments.iter().find(|(t, _)| t.address() == token_addr)
@@ -71,9 +78,10 @@ where
 }
 
 #[tonic::async_trait]
-impl<TReactor> P2pim for P2pimImpl<TReactor>
+impl<TReactor, TPersistence> P2pim for P2pimImpl<TReactor, TPersistence>
 where
   TReactor: reactor::Service,
+  TPersistence: persistence::Service,
 {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
@@ -193,6 +201,29 @@ where
       .map_err(|e| Status::unknown(format!("Error trying to store: {}", e)))?;
     Ok(Response::new(StoreResponse {
       transaction_hash: Some(result.into()),
+    }))
+  }
+
+  async fn list_storage_rented(
+    &self,
+    _: Request<ListStorageRentedRequest>,
+  ) -> Result<Response<ListStorageRentedResponse>, Status> {
+    let list = self.persistence.rent_list().await;
+    Ok(Response::new(ListStorageRentedResponse {
+      storage_rented_data: list
+        .into_iter()
+        .map(|l| StorageRentedData {
+          nonce: l.nonce,
+          peer_id: Some(l.peer_id.into()),
+          token_address: Some(l.terms.token_address.into()),
+          lease_duration: Some(l.terms.lease_duration.into()),
+          price: Some(l.terms.price.into()),
+          penalty: Some(l.terms.penalty.into()),
+          proposal_expiration: Some(l.terms.proposal_expiration.into()),
+          transaction_hash: l.chain_confirmation.clone().map(|c| c.transaction_hash.into()),
+          lease_started: l.chain_confirmation.clone().map(|c| c.timestamp.into()),
+        })
+        .collect(),
     }))
   }
 }

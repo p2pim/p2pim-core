@@ -1,9 +1,10 @@
-use crate::data::DataParameters;
-use crate::types::{LeaseTerms, Signature};
+use crate::types::{DataParameters, LeaseTerms, Signature};
 use crate::utils::ethereum::IntoAddress;
+use ethcontract::errors::EventError;
 use ethcontract::transaction::TransactionResult;
-use ethcontract::{Bytes, EventStatus};
-use futures::{select, StreamExt};
+use ethcontract::{Bytes, Event, EventStatus};
+use futures::stream::SelectAll;
+use futures::{select, Stream, StreamExt};
 use log::{debug, error, trace, warn};
 use p2pim_ethereum_contracts::third::openzeppelin;
 use p2pim_ethereum_contracts::{P2pimAdjudicator, P2pimMasterRecord};
@@ -12,12 +13,13 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
+use std::pin::Pin;
 use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use web3::ethabi::{Token, Topic};
 use web3::signing::{Key, SecretKeyRef};
-use web3::types::Address;
+use web3::types::{Address, Block, BlockId, H256};
 use web3::{DuplexTransport, Transport};
 
 #[derive(Clone)]
@@ -28,14 +30,14 @@ pub struct OnchainParams {
 
 #[async_trait]
 pub trait Service: Clone + Send + Sync + 'static {
-  // TODO Return type should be specific type for signature
-  async fn sign_proposal(
-    &self,
-    lessor_address: &Address,
-    nonce: u64,
-    terms: &LeaseTerms,
-    data_parameters: &DataParameters,
-  ) -> Signature;
+  type StreamType: Stream<Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>>
+    + Unpin;
+
+  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>, Box<dyn Error>>;
+
+  async fn listen_adjudicator_events(&self) -> Self::StreamType;
+
+  fn own_address(&self) -> web3::types::Address;
 
   async fn seal_lease(
     &self,
@@ -45,6 +47,14 @@ pub trait Service: Clone + Send + Sync + 'static {
     data_parameters: DataParameters,
     lessee_signature: Signature,
   ) -> Result<TransactionResult, Box<dyn Error>>;
+
+  async fn sign_proposal(
+    &self,
+    lessor_address: &Address,
+    nonce: u64,
+    terms: &LeaseTerms,
+    data_parameters: &DataParameters,
+  ) -> Signature;
 
   async fn wait_for_seal_lease(
     &self,
@@ -120,13 +130,6 @@ where
   F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
   T: Transport<Out = F> + DuplexTransport + Send + Sync + 'static,
 {
-  fn self_address(&self) -> Address {
-    let context = Secp256k1::new();
-    let secret = secp256k1::SecretKey::from_slice(self.params.private_key.as_slice()).expect("this will never happen");
-    let public_key = secp256k1::PublicKey::from_secret_key(&context, &secret);
-    public_key.borrow().into_address()
-  }
-
   async fn sign(
     &self,
     lessee_address: &Address,
@@ -181,15 +184,60 @@ where
   N: futures::Stream + Send + Unpin,
   T: Transport<Out = F> + DuplexTransport<NotificationStream = N> + Send + Sync + 'static,
 {
-  async fn sign_proposal(
-    &self,
-    lessor_address: &Address,
-    nonce: u64,
-    terms: &LeaseTerms,
-    data_parameters: &DataParameters,
-  ) -> Signature {
-    let lessee_address = &self.self_address();
-    self.sign(lessee_address, lessor_address, nonce, terms, data_parameters).await
+  type StreamType = SelectAll<
+    Pin<
+      Box<
+        dyn Stream<
+          Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>,
+        >,
+      >,
+    >,
+  >;
+
+  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>, Box<dyn Error>> {
+    Ok(self.web3.eth().block(block_id).await?)
+  }
+
+  async fn listen_adjudicator_events(&self) -> Self::StreamType {
+    let self_address = self.own_address();
+
+    fn event_stream(
+      adjudicator: &P2pimAdjudicator,
+      lessor_address: Option<Address>,
+      lessee_address: Option<Address>,
+    ) -> Pin<
+      Box<
+        dyn Stream<
+          Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>,
+        >,
+      >,
+    > {
+      Box::pin(
+        adjudicator
+          .clone()
+          .events()
+          .lease_sealed()
+          .lessor(lessor_address.map(Topic::This).unwrap_or(Topic::Any))
+          .lessee(lessee_address.map(Topic::This).unwrap_or(Topic::Any))
+          .stream(),
+      )
+    }
+
+    let streams = self.deployments.values().flat_map(|(_, adjudicator)| {
+      vec![
+        event_stream(adjudicator, Some(self_address), None),
+        event_stream(adjudicator, None, Some(self_address)),
+      ]
+    });
+
+    futures::stream::select_all(streams)
+  }
+
+  fn own_address(&self) -> Address {
+    let context = Secp256k1::new();
+    let secret = secp256k1::SecretKey::from_slice(self.params.private_key.as_slice()).expect("this will never happen");
+    let public_key = secp256k1::PublicKey::from_secret_key(&context, &secret);
+    public_key.borrow().into_address()
   }
 
   async fn seal_lease(
@@ -200,7 +248,7 @@ where
     data_parameters: DataParameters,
     lessee_signature: Signature,
   ) -> Result<TransactionResult, Box<dyn Error>> {
-    let lessor_address = self.self_address();
+    let lessor_address = self.own_address();
 
     let lessor_signature = self
       .sign(&lessee_address, &lessor_address, nonce, &terms, &data_parameters)
@@ -240,6 +288,17 @@ where
     Ok(result)
   }
 
+  async fn sign_proposal(
+    &self,
+    lessor_address: &Address,
+    nonce: u64,
+    terms: &LeaseTerms,
+    data_parameters: &DataParameters,
+  ) -> Signature {
+    let lessee_address = &self.own_address();
+    self.sign(lessee_address, lessor_address, nonce, terms, data_parameters).await
+  }
+
   async fn wait_for_seal_lease(
     &self,
     token_address: &Address,
@@ -251,7 +310,7 @@ where
     Box<dyn Error>,
   > {
     let (_, adjudicator) = self.deployments.get(token_address).ok_or("adjudicator not found")?;
-    let lessee_address = self.self_address();
+    let lessee_address = self.own_address();
     let last_block = self.web3.eth().block_number().await?;
     // TODO This is using polling, maybe better to use subscriptions
     let mut event_stream = Box::pin(

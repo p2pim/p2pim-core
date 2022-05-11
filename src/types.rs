@@ -43,11 +43,33 @@ impl Signature {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct Lease {
+  pub peer_id: libp2p::PeerId,
+  pub peer_address: web3::types::Address,
+  pub nonce: u64,
+  pub terms: LeaseTerms,
+  pub data_parameters: DataParameters,
+  pub chain_confirmation: Option<ChainConfirmation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataParameters {
+  pub merkle_root: Vec<u8>,
+  pub size: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct LeaseTerms {
   pub token_address: web3::types::Address,
   pub price: web3::types::U256,
   pub penalty: web3::types::U256,
   pub proposal_expiration: SystemTime,
   pub lease_duration: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainConfirmation {
+  pub transaction_hash: web3::types::H256,
+  pub timestamp: SystemTime,
 }
