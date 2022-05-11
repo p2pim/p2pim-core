@@ -3,13 +3,15 @@ use bigdecimal::BigDecimal;
 use clap::{ArgMatches, Command};
 use num_bigint::{Sign, ToBigInt};
 use p2pim::proto::api::p2pim_client::P2pimClient;
-use p2pim::proto::api::{DepositRequest, GetBalanceRequest};
+use p2pim::proto::api::{GetBalanceRequest, WithdrawRequest};
 use std::convert::TryInto;
 use web3::types::H256;
 
+pub const CMD_NAME: &str = "withdraw";
+
 pub fn command() -> Command<'static> {
-  Command::new("deposit")
-    .about("deposits tokens into adjudicator")
+  Command::new(CMD_NAME)
+    .about("withdraw tokens from adjudicator")
     .arg(arg_url())
     .arg(arg_token())
     .arg(arg_amount())
@@ -23,10 +25,10 @@ pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
     .enable_all()
     .build()
     .unwrap()
-    .block_on(run_deposit(rpc_url, token_addr, amount))
+    .block_on(run_withdraw(rpc_url, token_addr, amount))
 }
 
-async fn run_deposit(
+async fn run_withdraw(
   rpc_url: String,
   token_addr: web3::types::Address,
   amount: BigDecimal,
@@ -51,7 +53,7 @@ async fn run_deposit(
   } else {
     let conv_amount = abs_amount.to_bigint().expect("never returns None").try_into()?;
     let response = client
-      .deposit(DepositRequest {
+      .withdraw(WithdrawRequest {
         token_address: Some(token_addr.into()),
         amount: Some(conv_amount),
       })
@@ -62,7 +64,7 @@ async fn run_deposit(
       .as_ref()
       .ok_or("unexpected empty transaction hash response")?
       .into();
-    println!("Deposit sent, transaction 0x{:x}", trans_hash);
+    println!("Withdraw sent, transaction 0x{:x}", trans_hash);
     Ok(())
   }
 }

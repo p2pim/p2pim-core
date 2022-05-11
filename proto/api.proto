@@ -10,6 +10,7 @@ service P2pim {
   rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
   rpc Approve (ApproveRequest) returns (ApproveResponse);
   rpc Deposit (DepositRequest) returns (DepositResponse);
+  rpc Withdraw (WithdrawRequest) returns (WithdrawResponse);
   rpc Store (StoreRequest) returns (StoreResponse);
   rpc ListStorageRented (ListStorageRentedRequest) returns (ListStorageRentedResponse);
   // rpc ListStorageLet (ListSotorageLetRequest) returns (ListStorageLetResponse);
@@ -107,5 +108,14 @@ message DepositRequest {
 }
 
 message DepositResponse {
+  solidity.H256 transaction_hash = 1;
+}
+
+message WithdrawRequest {
+  solidity.Address token_address = 1;
+  solidity.Uint256 amount = 2;
+}
+
+message WithdrawResponse {
   solidity.H256 transaction_hash = 1;
 }

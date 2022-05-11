@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Some(("deposit", m)) => cmd::deposit::run(m),
     Some(("info", m)) => cmd::info::run(m),
     Some(("swarm", m)) => cmd::swarm::run(m),
+    Some((cmd::withdraw::CMD_NAME, m)) => cmd::withdraw::run(m),
     Some((cmd::data::DATA_CMD, m)) => cmd::data::run(m),
     _ => unreachable!("this should not happen if we have all the cases covered"),
   };
@@ -29,4 +30,5 @@ fn cli() -> Command<'static> {
     .subcommand(cmd::info::command())
     .subcommand(cmd::data::command())
     .subcommand(cmd::swarm::command())
+    .subcommand(cmd::withdraw::command())
 }

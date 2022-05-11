@@ -2,7 +2,7 @@ use crate::types::{DataParameters, LeaseTerms, Signature};
 use crate::utils::ethereum::IntoAddress;
 use ethcontract::errors::EventError;
 use ethcontract::transaction::TransactionResult;
-use ethcontract::{Bytes, Event, EventStatus};
+use ethcontract::{Account, Bytes, Event, EventStatus, PrivateKey};
 use futures::stream::SelectAll;
 use futures::{select, Stream, StreamExt};
 use log::{debug, error, trace, warn};
@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use web3::ethabi::{Token, Topic};
 use web3::signing::{Key, SecretKeyRef};
-use web3::types::{Address, Block, BlockId, H256};
+use web3::types::{Address, Block, BlockId, H256, U256};
 use web3::{DuplexTransport, Transport};
 
 #[derive(Clone)]
@@ -66,6 +66,8 @@ pub trait Service: Clone + Send + Sync + 'static {
     Option<ethcontract::Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>>,
     Box<dyn Error>,
   >;
+
+  async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
 }
 
 #[derive(Clone)]
@@ -73,6 +75,8 @@ struct Implementation<T>
 where
   T: Transport + DuplexTransport,
 {
+  account_wallet: Address,
+  account_storage: Address,
   params: OnchainParams,
   web3: web3::Web3<T>,
   deployments: HashMap<Address, (openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
@@ -118,7 +122,14 @@ where
     .collect();
   debug!("found deployments {:?}", deployments);
 
+  let context = Secp256k1::new();
+  let secret = secp256k1::SecretKey::from_slice(params.private_key.as_slice()).expect("this will never happen");
+  let public_key = secp256k1::PublicKey::from_secret_key(&context, &secret);
+  let account_storage = public_key.borrow().into_address();
+
   Ok(Implementation {
+    account_wallet,
+    account_storage,
     params,
     web3,
     deployments,
@@ -235,10 +246,7 @@ where
   }
 
   fn own_address(&self) -> Address {
-    let context = Secp256k1::new();
-    let secret = secp256k1::SecretKey::from_slice(self.params.private_key.as_slice()).expect("this will never happen");
-    let public_key = secp256k1::PublicKey::from_secret_key(&context, &secret);
-    public_key.borrow().into_address()
+    self.account_storage.clone()
   }
 
   async fn seal_lease(
@@ -371,5 +379,17 @@ where
       Err(e) => error!("error while unsubscribe from heads: {}", e),
     };
     Ok(result?)
+  }
+
+  async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>> {
+    let (_, adjudicator) = self.deployments.get(token_addres).ok_or("deployment for token not found")?;
+    Ok(
+      adjudicator
+        .methods()
+        .withdraw(amount, self.account_wallet.clone())
+        .from(Account::Offline(PrivateKey::from_raw(self.params.private_key)?, None)) // TODO should we use the chain id?
+        .send()
+        .await?,
+    )
   }
 }

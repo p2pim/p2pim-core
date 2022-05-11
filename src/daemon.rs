@@ -121,13 +121,14 @@ where
 
   let persistence = crate::persistence::new_service();
 
-  let (reactor, reactor_fut) = crate::reactor::new_service(data, onchain, p2p.clone(), persistence.clone());
+  let (reactor, reactor_fut) = crate::reactor::new_service(data, onchain.clone(), p2p.clone(), persistence.clone());
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
     account_wallet,
     account_storage,
     deployments,
+    onchain.clone(),
     p2p.clone(),
     reactor.clone(),
     persistence.clone(),

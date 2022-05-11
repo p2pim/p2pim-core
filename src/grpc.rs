@@ -10,11 +10,11 @@ use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
   GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, ListStorageRentedRequest,
-  ListStorageRentedResponse, StoreRequest, StoreResponse, TokenInfo,
+  ListStorageRentedResponse, StoreRequest, StoreResponse, TokenInfo, WithdrawRequest, WithdrawResponse,
 };
 use crate::proto::libp2p::PeerId;
 use crate::types::LeaseTerms;
-use crate::{p2p, persistence, reactor};
+use crate::{onchain, p2p, persistence, reactor};
 use futures::StreamExt;
 use log::{info, warn};
 use p2pim_ethereum_contracts;
@@ -23,16 +23,18 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use web3::types::U256;
 
-pub async fn listen_and_serve<TReactor, TP2p, TPersistence>(
+pub async fn listen_and_serve<TOnchain, TP2p, TPersistence, TReactor>(
   rpc_addr: SocketAddr,
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
+  onchain: TOnchain,
   p2p: TP2p,
   reactor: TReactor,
   persistence: TPersistence,
 ) -> Result<(), Box<dyn Error>>
 where
+  TOnchain: onchain::Service,
   TReactor: reactor::Service,
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
@@ -42,6 +44,7 @@ where
     account_wallet,
     account_storage,
     deployments,
+    onchain,
     reactor,
     persistence,
   };
@@ -55,22 +58,25 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct P2pimImpl<TReactor, TPersistence>
+struct P2pimImpl<TOnchain, TPersistence, TReactor>
 where
-  TReactor: reactor::Service,
+  TOnchain: onchain::Service,
   TPersistence: persistence::Service,
+  TReactor: reactor::Service,
 {
   account_wallet: web3::types::Address,
   account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
+  onchain: TOnchain,
   reactor: TReactor,
   persistence: TPersistence,
 }
 
-impl<TReactor, TPersistence> P2pimImpl<TReactor, TPersistence>
+impl<TOnchain, TPersistence, TReactor> P2pimImpl<TOnchain, TPersistence, TReactor>
 where
-  TReactor: reactor::Service,
+  TOnchain: onchain::Service,
   TPersistence: persistence::Service,
+  TReactor: reactor::Service,
 {
   fn deployment(&self, token_addr: web3::types::Address) -> Option<&(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
     self.deployments.iter().find(|(t, _)| t.address() == token_addr)
@@ -78,10 +84,11 @@ where
 }
 
 #[tonic::async_trait]
-impl<TReactor, TPersistence> P2pim for P2pimImpl<TReactor, TPersistence>
+impl<TOnchain, TPersistence, TReactor> P2pim for P2pimImpl<TOnchain, TPersistence, TReactor>
 where
-  TReactor: reactor::Service,
+  TOnchain: onchain::Service,
   TPersistence: persistence::Service,
+  TReactor: reactor::Service,
 {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
@@ -164,6 +171,30 @@ where
       .await
       .map_err(|e| Status::internal(format!("error sending deposit transaction: {}", e)))?;
     Ok(Response::new(DepositResponse {
+      transaction_hash: Some(From::from(result.hash())),
+    }))
+  }
+
+  async fn withdraw(&self, request: Request<WithdrawRequest>) -> Result<Response<WithdrawResponse>, Status> {
+    let dep_req = request.get_ref();
+    let token_addr = dep_req
+      .token_address
+      .as_ref()
+      .ok_or(Status::invalid_argument("token_address empty"))?
+      .into();
+
+    let amount = dep_req
+      .amount
+      .as_ref()
+      .ok_or(Status::invalid_argument("amount empty"))?
+      .into();
+
+    let result = self
+      .onchain
+      .withdraw(&token_addr, amount)
+      .await
+      .map_err(|e| Status::internal(format!("error sending withdraw transaction: {}", e)))?;
+    Ok(Response::new(WithdrawResponse {
       transaction_hash: Some(From::from(result.hash())),
     }))
   }

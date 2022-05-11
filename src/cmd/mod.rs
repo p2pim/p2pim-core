@@ -7,6 +7,7 @@ pub mod data;
 pub mod deposit;
 pub mod info;
 pub mod swarm;
+pub mod withdraw;
 
 const ARG_URL: &str = "url";
 const ARG_URL_DEFAULT: &str = "http://127.0.0.1:8122";
@@ -28,4 +29,14 @@ fn arg_token() -> Arg<'static> {
     .required(true)
     .validator(web3::types::Address::from_str)
     .help("token to approve")
+}
+
+const ARG_AMOUNT: &str = "amount";
+
+fn arg_amount() -> Arg<'static> {
+  Arg::new(ARG_AMOUNT)
+    .takes_value(true)
+    .required(true)
+    .validator(bigdecimal::BigDecimal::from_str)
+    .help("amount")
 }
