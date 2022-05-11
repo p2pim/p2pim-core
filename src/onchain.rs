@@ -159,6 +159,7 @@ where
     ];
     let abi_encoded = web3::ethabi::encode(&message);
     let message_hash = web3::signing::keccak256(abi_encoded.as_slice());
+    let eth_message_hash = web3::signing::hash_message(message_hash);
 
     trace!(
       "message {}, hash to sign {}, lesse: {}, lessor: {}",
@@ -171,7 +172,7 @@ where
 
     Signature::from(
       SecretKeyRef::new(&secret)
-        .sign(web3::signing::keccak256(abi_encoded.as_slice()).as_slice(), None)
+        .sign(eth_message_hash.as_bytes(), None)
         .expect("Why can fail?"),
     )
   }

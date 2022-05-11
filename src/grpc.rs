@@ -241,13 +241,13 @@ async fn read_balances(
     result.ok()
   }
 
-  let supplied = adjudicator.balance(account_storage).call().await?.0;
+  let (available_p2pim, locked_rents, locked_lets) = adjudicator.balance(account_storage).call().await?;
   let name = ok_or_warn(token.name().call().await, "name", token.address());
   let symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
   let decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
 
-  let available = token.balance_of(account_wallet).call().await?;
-  let allowance = token.allowance(account_wallet, adjudicator.address()).call().await?;
+  let available_account = token.balance_of(account_wallet).call().await?;
+  let allowance_account = token.allowance(account_wallet, adjudicator.address()).call().await?;
 
   Ok(BalanceEntry {
     token: Some(TokenInfo {
@@ -256,9 +256,11 @@ async fn read_balances(
       decimals: From::from(decimals.unwrap_or(Default::default())),
       symbol: symbol.unwrap_or(Default::default()),
     }),
-    available: Some(From::from(&available)),
-    allowed: Some(From::from(&allowance)),
-    supplied: Some(From::from(&supplied)),
+    available_account: Some(From::from(&available_account)),
+    allowed_account: Some(From::from(&allowance_account)),
+    available_p2pim: Some(From::from(&available_p2pim)),
+    locked_rents: Some(From::from(&locked_rents)),
+    locked_lets: Some(From::from(&locked_lets)),
   })
 }
 

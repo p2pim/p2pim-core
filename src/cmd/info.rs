@@ -63,13 +63,19 @@ fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
   let token_decimals = From::from(token.decimals);
 
   let to_big_decimal = |v| BigDecimal::new(v, token_decimals);
-  let available = convert_or_err(entry.available.as_ref(), "missing available amount").map(to_big_decimal)?;
-  let allowed = convert_or_err(entry.allowed.as_ref(), "missing available amount").map(to_big_decimal)?;
-  let supplied = convert_or_err(entry.supplied.as_ref(), "missing available amount").map(to_big_decimal)?;
+  let available_account =
+    convert_or_err(entry.available_account.as_ref(), "missing available account amount").map(to_big_decimal)?;
+  let allowed_account =
+    convert_or_err(entry.allowed_account.as_ref(), "missing allowed account amount").map(to_big_decimal)?;
+  let available_p2pim = convert_or_err(entry.available_p2pim.as_ref(), "missing available p2p amount").map(to_big_decimal)?;
+  let locked_rents = convert_or_err(entry.locked_rents.as_ref(), "missing locked rents amount").map(to_big_decimal)?;
+  let locked_lets = convert_or_err(entry.locked_lets.as_ref(), "missing locked lets amount").map(to_big_decimal)?;
 
-  write!(result, "    Available: {}\n", available)?;
-  write!(result, "    Allowed  : {}\n", allowed)?;
-  write!(result, "    Supplied : {}\n", supplied)?;
+  write!(result, "    Available Account: {}\n", available_account)?;
+  write!(result, "    Allowed Account  : {}\n", allowed_account)?;
+  write!(result, "    Available P2pim  : {}\n", available_p2pim)?;
+  write!(result, "    Locked Rents     : {}\n", locked_rents)?;
+  write!(result, "    Locked Lets      : {}\n", locked_lets)?;
   Ok(result)
 }
 

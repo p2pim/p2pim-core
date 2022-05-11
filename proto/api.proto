@@ -70,9 +70,11 @@ message GetInfoResponse {
 
 message BalanceEntry {
   TokenInfo token = 1;
-  solidity.Uint256 available = 2;
-  solidity.Uint256 allowed = 3;
-  solidity.Uint256 supplied = 4;
+  solidity.Uint256 available_account = 2;
+  solidity.Uint256 allowed_account = 3;
+  solidity.Uint256 available_p2pim = 4;
+  solidity.Uint256 locked_rents = 5;
+  solidity.Uint256 locked_lets = 6;
 }
 
 message TokenInfo {
