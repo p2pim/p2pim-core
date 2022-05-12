@@ -12,6 +12,12 @@ pub struct MerkleTree {
   current_bytes: usize,
 }
 
+impl Default for MerkleTree {
+  fn default() -> Self {
+    MerkleTree::new()
+  }
+}
+
 impl MerkleTree {
   pub fn new() -> Self {
     MerkleTree {
@@ -37,7 +43,7 @@ impl MerkleTree {
       let mut result = Default::default();
       self.digest.finalize_into_reset(&mut result);
       log::debug!("Push ({}, {})", 1, hex::encode(result.as_slice()));
-      self.state.push_front((1, result.clone()));
+      self.state.push_front((1, result));
       self.collapse_state();
       self.update(rest);
     }
@@ -48,7 +54,7 @@ impl MerkleTree {
       let mut result = Default::default();
       self.digest.finalize_into_reset(&mut result);
       log::debug!("Push ({}, {})", 1, hex::encode(result.as_slice()));
-      self.state.push_front((1, result.clone()));
+      self.state.push_front((1, result));
       self.collapse_state();
     }
 

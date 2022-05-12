@@ -71,7 +71,7 @@ impl Service for Arc<Mutex<Implementation>> {
       None => Err(UpdateError::LeaseNotFound),
       Some((key, mut lease)) => {
         lease.chain_confirmation = chain_confirmation;
-        guard.leases_rent.insert(key.clone(), lease);
+        guard.leases_rent.insert(key, lease);
         Ok(())
       }
     }
@@ -80,7 +80,7 @@ impl Service for Arc<Mutex<Implementation>> {
   async fn rent_list(&self) -> Vec<Lease> {
     let guard = self.lock().unwrap();
     // TODO should we clone here?
-    guard.leases_rent.values().map(|c| c.clone()).collect()
+    guard.leases_rent.values().cloned().collect()
   }
 }
 
@@ -92,7 +92,7 @@ pub struct Key {
 
 fn key(lease: &Lease) -> Key {
   Key {
-    peer_id: lease.peer_id.clone(),
+    peer_id: lease.peer_id,
     nonce: lease.nonce,
   }
 }

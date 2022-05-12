@@ -47,9 +47,9 @@ async fn run_withdraw(
     .ok_or("TODO: invalid response")? as i64;
   let abs_amount: BigDecimal = amount * BigDecimal::new(1.into(), -decimals);
   if !abs_amount.is_integer() {
-    return Err("TODO(formatting): the amount has too many decimals".into());
+    Err("TODO(formatting): the amount has too many decimals".into())
   } else if abs_amount.sign() == Sign::Minus {
-    return Err("TODO:(formatting): the amount cannot be negative".into());
+    Err("TODO:(formatting): the amount cannot be negative".into())
   } else {
     let conv_amount = abs_amount.to_bigint().expect("never returns None").try_into()?;
     let response = client

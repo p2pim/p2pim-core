@@ -22,5 +22,5 @@ impl IntoAddress for &secp256k1::PublicKey {
 fn as_address(raw: [u8; 65]) -> Address {
   debug_assert_eq!(raw[0], 0x04);
   let hash = keccak256(&raw[1..]);
-  return Address::from_slice(&hash[12..]);
+  Address::from_slice(&hash[12..])
 }

@@ -71,11 +71,11 @@ fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
   let locked_rents = convert_or_err(entry.locked_rents.as_ref(), "missing locked rents amount").map(to_big_decimal)?;
   let locked_lets = convert_or_err(entry.locked_lets.as_ref(), "missing locked lets amount").map(to_big_decimal)?;
 
-  write!(result, "    Available Account: {}\n", available_account)?;
-  write!(result, "    Allowed Account  : {}\n", allowed_account)?;
-  write!(result, "    Available P2pim  : {}\n", available_p2pim)?;
-  write!(result, "    Locked Rents     : {}\n", locked_rents)?;
-  write!(result, "    Locked Lets      : {}\n", locked_lets)?;
+  writeln!(result, "    Available Account: {}", available_account)?;
+  writeln!(result, "    Allowed Account  : {}", allowed_account)?;
+  writeln!(result, "    Available P2pim  : {}", available_p2pim)?;
+  writeln!(result, "    Locked Rents     : {}", locked_rents)?;
+  writeln!(result, "    Locked Lets      : {}", locked_lets)?;
   Ok(result)
 }
 

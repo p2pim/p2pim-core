@@ -105,13 +105,11 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for Behaviour {
           let peer_id_from_public = PeerId::from_public_key(&info.public_key);
           if peer_id_from_public != peer_id {
             warn!("peer sending wrong public key peer_id={}", peer_id);
+          } else if let libp2p::identity::PublicKey::Secp256k1(_) = info.public_key.clone() {
+            info!("known peer with id {}: {:?}", peer_id, info);
+            self.known_peers.insert(peer_id, info);
           } else {
-            if let libp2p::identity::PublicKey::Secp256k1(_) = info.public_key.clone() {
-              info!("known peer with id {}: {:?}", peer_id, info);
-              self.known_peers.insert(peer_id, info);
-            } else {
-              warn!("peer sending a public key not supported: {:?}", info.public_key);
-            }
+            warn!("peer sending a public key not supported: {:?}", info.public_key);
           }
         }
       }

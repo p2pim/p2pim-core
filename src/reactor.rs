@@ -1,6 +1,6 @@
 use crate::p2p::behaviour::Event;
 use crate::p2p::p2pim::LeaseProposal;
-use crate::types::{ChainConfirmation, Lease, LeaseTerms, Signature};
+use crate::types::{ChainConfirmation, Lease, LeaseTerms};
 use crate::utils::ethereum::IntoAddress;
 use crate::{data, onchain, p2p, persistence};
 use ethcontract::transaction::TransactionResult;
@@ -109,10 +109,10 @@ where
     event: EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>,
     meta: EventMetadata,
   ) -> Result<(), Box<dyn Error>> {
-    let own_address = self.onchain.own_address();
+    let own_address = self.onchain.account_storage();
     let block = self
       .onchain
-      .block(BlockId::Hash(meta.block_hash.clone()))
+      .block(BlockId::Hash(meta.block_hash))
       .await?
       .ok_or("block not found")?;
     //let block = self.onchain
@@ -192,25 +192,22 @@ where
       .sign_proposal(&lessor_address, nonce, &terms, &data_parameters)
       .await;
 
-    let expiration = terms.proposal_expiration.clone();
-    let token_address = terms.token_address.clone();
+    let expiration = terms.proposal_expiration;
+    let token_address = terms.token_address;
 
     self
       .persistence
       .rent_store(Lease {
-        peer_id: peer_id.clone(),
-        peer_address: lessor_address.clone(),
-        nonce: nonce,
+        peer_id,
+        peer_address: lessor_address,
+        nonce,
         terms: terms.clone(),
         data_parameters: data_parameters.clone(),
         chain_confirmation: None,
       })
       .await;
 
-    self
-      .p2p
-      .send_proposal(peer_id, nonce, terms, Signature::from(signature), data)
-      .await;
+    self.p2p.send_proposal(peer_id, nonce, terms, signature, data).await;
 
     let seal_lease_event = self
       .onchain

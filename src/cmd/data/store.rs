@@ -143,6 +143,6 @@ fn convert_amount(original: BigDecimal, decimals: i64, name: &str) -> Result<Big
   } else if abs_amount.sign() == Sign::Minus {
     Err(format!("TODO:(formatting): the amount for {} cannot be negative", name).into())
   } else {
-    Ok(abs_amount.to_bigint().expect("this will never happens").try_into()?)
+    Ok(abs_amount.to_bigint().expect("this will never happens"))
   }
 }

@@ -37,7 +37,8 @@ pub trait Service: Clone + Send + Sync + 'static {
 
   async fn listen_adjudicator_events(&self) -> Self::StreamType;
 
-  fn own_address(&self) -> web3::types::Address;
+  fn account_wallet(&self) -> web3::types::Address;
+  fn account_storage(&self) -> web3::types::Address;
 
   async fn seal_lease(
     &self,
@@ -151,8 +152,8 @@ where
   ) -> Signature {
     let message = [
       Token::Address(terms.token_address),
-      Token::Address(lessee_address.clone()),
-      Token::Address(lessor_address.clone()),
+      Token::Address(*lessee_address),
+      Token::Address(*lessor_address),
       Token::Uint(nonce.into()),
       Token::FixedBytes(data_parameters.merkle_root.clone()),
       Token::Uint(data_parameters.size.into()),
@@ -211,7 +212,7 @@ where
   }
 
   async fn listen_adjudicator_events(&self) -> Self::StreamType {
-    let self_address = self.own_address();
+    let self_address = self.account_storage();
 
     fn event_stream(
       adjudicator: &P2pimAdjudicator,
@@ -245,8 +246,12 @@ where
     futures::stream::select_all(streams)
   }
 
-  fn own_address(&self) -> Address {
-    self.account_storage.clone()
+  fn account_wallet(&self) -> Address {
+    self.account_wallet
+  }
+
+  fn account_storage(&self) -> Address {
+    self.account_storage
   }
 
   async fn seal_lease(
@@ -257,7 +262,7 @@ where
     data_parameters: DataParameters,
     lessee_signature: Signature,
   ) -> Result<TransactionResult, Box<dyn Error>> {
-    let lessor_address = self.own_address();
+    let lessor_address = self.account_storage();
 
     let lessor_signature = self
       .sign(&lessee_address, &lessor_address, nonce, &terms, &data_parameters)
@@ -271,8 +276,8 @@ where
 
     let (_, adjudicator) = self.deployments.get(&terms.token_address).ok_or("deployment not found")?;
     let lease_deal = (
-      lessee_address.clone(),
-      lessor_address.clone(),
+      lessee_address,
+      lessor_address,
       nonce,
       Bytes(merkle_root),
       data_parameters.size as u64,
@@ -304,7 +309,7 @@ where
     terms: &LeaseTerms,
     data_parameters: &DataParameters,
   ) -> Signature {
-    let lessee_address = &self.own_address();
+    let lessee_address = &self.account_storage();
     self.sign(lessee_address, lessor_address, nonce, terms, data_parameters).await
   }
 
@@ -319,7 +324,7 @@ where
     Box<dyn Error>,
   > {
     let (_, adjudicator) = self.deployments.get(token_address).ok_or("adjudicator not found")?;
-    let lessee_address = self.own_address();
+    let lessee_address = self.account_storage();
     let last_block = self.web3.eth().block_number().await?;
     // TODO This is using polling, maybe better to use subscriptions
     let mut event_stream = Box::pin(
@@ -327,7 +332,7 @@ where
         .events()
         .lease_sealed()
         .from_block(ethcontract::BlockNumber::Number(
-          last_block.checked_sub(10u64.into()).unwrap_or(0u64.into()),
+          last_block.checked_sub(10u64.into()).unwrap_or_default(),
         ))
         .lessor(Topic::This(lessor_address))
         .lessee(Topic::This(lessee_address))
@@ -386,7 +391,7 @@ where
     Ok(
       adjudicator
         .methods()
-        .withdraw(amount, self.account_wallet.clone())
+        .withdraw(amount, self.account_wallet)
         .from(Account::Offline(PrivateKey::from_raw(self.params.private_key)?, None)) // TODO should we use the chain id?
         .send()
         .await?,

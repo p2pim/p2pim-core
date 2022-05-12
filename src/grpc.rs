@@ -25,8 +25,6 @@ use web3::types::U256;
 
 pub async fn listen_and_serve<TOnchain, TP2p, TPersistence, TReactor>(
   rpc_addr: SocketAddr,
-  account_wallet: web3::types::Address,
-  account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   onchain: TOnchain,
   p2p: TP2p,
@@ -41,8 +39,6 @@ where
 {
   info!("starting gRPC server on {}", rpc_addr);
   let p2pim_impl = P2pimImpl {
-    account_wallet,
-    account_storage,
     deployments,
     onchain,
     reactor,
@@ -64,8 +60,6 @@ where
   TPersistence: persistence::Service,
   TReactor: reactor::Service,
 {
-  account_wallet: web3::types::Address,
-  account_storage: web3::types::Address,
   deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   onchain: TOnchain,
   reactor: TReactor,
@@ -93,17 +87,23 @@ where
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
     let balance = futures::stream::iter(self.deployments.iter())
       .then(|(token, adjudicator)| async move {
-        read_balances(self.account_wallet, self.account_storage, token, adjudicator).await
+        read_balances(
+          self.onchain.account_wallet(),
+          self.onchain.account_storage(),
+          token,
+          adjudicator,
+        )
+        .await
       })
       .collect::<Vec<Result<BalanceEntry, _>>>()
       .await
       .into_iter()
       .collect::<Result<Vec<BalanceEntry>, _>>()
-      .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e.to_string())))?;
+      .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e)))?;
 
     Ok(Response::new(GetInfoResponse {
-      address_wallet: Some(From::from(&self.account_wallet)),
-      address_storage: Some(From::from(&self.account_storage)),
+      address_wallet: Some(From::from(&self.onchain.account_wallet())),
+      address_storage: Some(From::from(&self.onchain.account_storage())),
       balance,
     }))
   }
@@ -118,9 +118,14 @@ where
     let (token, adjudicator) = self
       .deployment(token_addr)
       .ok_or(Status::not_found("adjudicator not found for the token"))?;
-    let balance = read_balances(self.account_wallet, self.account_storage, token, adjudicator)
-      .await
-      .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e.to_string())))?;
+    let balance = read_balances(
+      self.onchain.account_wallet(),
+      self.onchain.account_storage(),
+      token,
+      adjudicator,
+    )
+    .await
+    .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e)))?;
     Ok(Response::new(GetBalanceResponse { balance: Some(balance) }))
   }
 
@@ -165,7 +170,7 @@ where
       .deployment(token_addr)
       .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
     let result = adjudicator
-      .deposit(amount, self.account_storage)
+      .deposit(amount, self.onchain.account_storage())
       .confirmations(0)
       .send()
       .await
@@ -252,7 +257,7 @@ where
           penalty: Some(l.terms.penalty.into()),
           proposal_expiration: Some(l.terms.proposal_expiration.into()),
           transaction_hash: l.chain_confirmation.clone().map(|c| c.transaction_hash.into()),
-          lease_started: l.chain_confirmation.clone().map(|c| c.timestamp.into()),
+          lease_started: l.chain_confirmation.map(|c| c.timestamp.into()),
         })
         .collect(),
     }))
@@ -283,9 +288,9 @@ async fn read_balances(
   Ok(BalanceEntry {
     token: Some(TokenInfo {
       token_address: Some(From::from(&token.address())),
-      name: name.unwrap_or(Default::default()),
-      decimals: From::from(decimals.unwrap_or(Default::default())),
-      symbol: symbol.unwrap_or(Default::default()),
+      name: name.unwrap_or_default(),
+      decimals: From::from(decimals.unwrap_or_default()),
+      symbol: symbol.unwrap_or_default(),
     }),
     available_account: Some(From::from(&available_account)),
     allowed_account: Some(From::from(&allowance_account)),

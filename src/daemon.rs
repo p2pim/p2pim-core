@@ -1,11 +1,10 @@
-use crate::utils::ethereum::IntoAddress;
 use crate::{onchain, p2p};
 use futures::future::try_join_all;
 use libp2p::identity::{secp256k1, Keypair};
 use log::{debug, info};
 use p2pim_ethereum_contracts;
 use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
-use std::convert::identity;
+
 use std::error::Error;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -103,7 +102,6 @@ where
 
   let secp256k1_keypair = secp256k1::Keypair::generate();
   let keypair = Keypair::Secp256k1(secp256k1_keypair.clone());
-  let account_storage = secp256k1_keypair.public().into_address();
   let p2p = p2p::create_p2p(keypair).await?;
 
   type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
@@ -113,7 +111,7 @@ where
   let onchain = crate::onchain::new_service(
     onchain::OnchainParams {
       private_key: private_key_raw,
-      master_address: master_addr.clone(),
+      master_address: master_addr,
     },
     web3,
   )
@@ -125,8 +123,6 @@ where
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
-    account_wallet,
-    account_storage,
     deployments,
     onchain.clone(),
     p2p.clone(),
@@ -136,9 +132,6 @@ where
 
   let s3 = s3_addr.map::<ServeFuture, _>(|addr| Box::pin(crate::s3::listen_and_serve(addr)));
   let reactor_fut2: ServeFuture = Box::pin(futures::FutureExt::map(reactor_fut, Result::Ok));
-  let futures: Vec<ServeFuture> = vec![Some(reactor_fut2), Some(grpc), s3]
-    .into_iter()
-    .filter_map(identity)
-    .collect();
+  let futures: Vec<ServeFuture> = vec![Some(reactor_fut2), Some(grpc), s3].into_iter().flatten().collect();
   try_join_all(futures).await.map(|_| ())
 }

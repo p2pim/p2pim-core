@@ -22,6 +22,12 @@ pub struct Behaviour {
   waker: Option<Waker>,
 }
 
+impl Default for Behaviour {
+  fn default() -> Self {
+    Behaviour::new()
+  }
+}
+
 impl Behaviour {
   pub fn new() -> Self {
     Behaviour {
@@ -99,8 +105,8 @@ impl From<LeaseProposal> for proto::p2p::LeaseProposal {
         token_address: Some((&lease_terms.token_address).into()),
         price: Some((&lease_terms.price).into()),
         penalty: Some((&lease_terms.penalty).into()),
-        proposal_expiration: Some((lease_terms.proposal_expiration.clone()).into()),
-        lease_duration: Some((lease_terms.lease_duration.clone()).into()),
+        proposal_expiration: Some(lease_terms.proposal_expiration.into()),
+        lease_duration: Some(lease_terms.lease_duration.into()),
       }),
       signature: value.signature.serialize(),
       data: value.data,
@@ -166,7 +172,7 @@ impl NetworkBehaviour for Behaviour {
     cx: &mut Context<'_>,
     _: &mut impl PollParameters,
   ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-    while let Some(command) = self.command_queue.pop_front() {
+    if let Some(command) = self.command_queue.pop_front() {
       match command {
         Command::SendProposal(peer_id, proposal) => {
           return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
