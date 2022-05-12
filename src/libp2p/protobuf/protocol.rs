@@ -1,4 +1,4 @@
-use asynchronous_codec::{BytesMut, Decoder, Encoder, FramedRead, FramedWrite, LengthCodec};
+use asynchronous_codec::{BytesMut, Decoder, Encoder, Framed, LengthCodec};
 use futures::future;
 use libp2p::core::UpgradeInfo;
 use libp2p::swarm::NegotiatedSubstream;
@@ -82,26 +82,25 @@ impl From<io::Error> for DecodeError {
   }
 }
 
-pub type InboundType<T> = FramedRead<NegotiatedSubstream, ProtobufDelimitedCodec<T>>;
-pub type OutboundType<T> = FramedWrite<NegotiatedSubstream, ProtobufDelimitedCodec<T>>;
+pub type ProtocolType<T> = Framed<NegotiatedSubstream, ProtobufDelimitedCodec<T>>;
 
 impl<T: prost::Message + Default> InboundUpgrade<NegotiatedSubstream> for Protocol<T> {
-  type Output = InboundType<T>;
+  type Output = ProtocolType<T>;
   type Error = Void;
   type Future = future::Ready<Result<Self::Output, Self::Error>>;
 
   fn upgrade_inbound(self, stream: NegotiatedSubstream, _: Self::Info) -> Self::Future {
     // FIXME The ProtobufDelimitedCode does not have a limit on message size, could eventually explode
-    future::ok(FramedRead::new(stream, ProtobufDelimitedCodec::default()))
+    future::ok(Framed::new(stream, ProtobufDelimitedCodec::default()))
   }
 }
 
 impl<T: prost::Message + Default> OutboundUpgrade<NegotiatedSubstream> for Protocol<T> {
-  type Output = OutboundType<T>;
+  type Output = ProtocolType<T>;
   type Error = Void;
   type Future = future::Ready<Result<Self::Output, Self::Error>>;
 
   fn upgrade_outbound(self, stream: NegotiatedSubstream, _: Self::Info) -> Self::Future {
-    future::ok(FramedWrite::new(stream, ProtobufDelimitedCodec::default()))
+    future::ok(Framed::new(stream, ProtobufDelimitedCodec::default()))
   }
 }

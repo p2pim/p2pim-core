@@ -1,4 +1,4 @@
-use super::protocol::{DecodeError, InboundType, OutboundType};
+use super::protocol::{DecodeError, ProtocolType};
 use futures::{SinkExt, StreamExt};
 use libp2p::swarm::handler::{InboundUpgradeSend, OutboundUpgradeSend};
 use libp2p::swarm::{ConnectionHandler, ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive, SubstreamProtocol};
@@ -22,8 +22,7 @@ pub struct Handler<T: prost::Message> {
   config: Config,
   keep_alive: KeepAlive,
   pending_messages: VecDeque<T>,
-  outbound: Option<OutboundType<T>>,
-  inbound: Option<InboundType<T>>,
+  connection: Option<ProtocolType<T>>,
   requested: bool,
 }
 
@@ -36,8 +35,7 @@ impl<T: prost::Message> Handler<T> {
       },
       keep_alive: KeepAlive::No,
       pending_messages: VecDeque::new(),
-      outbound: None,
-      inbound: None,
+      connection: None,
       requested: false,
     }
   }
@@ -88,7 +86,7 @@ impl<T: prost::Message + Default + 'static> ConnectionHandler for Handler<T> {
     _: Self::InboundOpenInfo,
   ) {
     trace!("fully negotiated inbound");
-    self.inbound = Some(protocol);
+    self.connection = Some(protocol);
     self.update_keep_alive();
   }
 
@@ -98,7 +96,7 @@ impl<T: prost::Message + Default + 'static> ConnectionHandler for Handler<T> {
     _: Self::OutboundOpenInfo,
   ) {
     trace!("fully negotiated outbond");
-    self.outbound = Some(protocol);
+    self.connection = Some(protocol);
     self.update_keep_alive();
   }
 
@@ -124,14 +122,14 @@ impl<T: prost::Message + Default + 'static> ConnectionHandler for Handler<T> {
     cx: &mut Context<'_>,
   ) -> Poll<ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::OutEvent, Self::Error>> {
     // TODO Refactor this method
-    if !self.pending_messages.is_empty() && self.outbound.is_none() && !self.requested {
+    if !self.pending_messages.is_empty() && self.connection.is_none() && !self.requested {
       self.requested = true;
       return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
         protocol: SubstreamProtocol::new(protocol::Protocol::new(self.config.protocol_name.as_slice()), ()),
       });
     }
 
-    let messages = if let Some(out) = self.outbound.as_mut() {
+    let messages = if let Some(out) = self.connection.as_mut() {
       let mut count = 0;
       while let Some(message) = self.pending_messages.pop_front() {
         if let Poll::Ready(state) = out.poll_ready_unpin(cx) {
@@ -160,7 +158,7 @@ impl<T: prost::Message + Default + 'static> ConnectionHandler for Handler<T> {
       self.update_keep_alive();
     }
 
-    if let Some(inbound) = self.inbound.as_mut() {
+    if let Some(inbound) = self.connection.as_mut() {
       match inbound.poll_next_unpin(cx) {
         Poll::Ready(None) => {
           return Poll::Ready(ConnectionHandlerEvent::Close(HandlerError::InboundClosed));
@@ -177,7 +175,7 @@ impl<T: prost::Message + Default + 'static> ConnectionHandler for Handler<T> {
       }
     }
 
-    if let Some(out) = self.outbound.as_mut() {
+    if let Some(out) = self.connection.as_mut() {
       match out.poll_flush_unpin(cx) {
         Poll::Ready(Ok(())) => {}
         Poll::Ready(Err(e)) => warn!("error sending message: {}", e),
