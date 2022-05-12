@@ -18,14 +18,16 @@ use std::pin::Pin;
 use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
+use url::Url;
 use web3::ethabi::{Token, Topic};
 use web3::signing::{Key, SecretKeyRef};
+use web3::transports::{Either, Ipc, WebSocket};
 use web3::types::{Address, Block, BlockId, H256, U256};
-use web3::{DuplexTransport, Transport};
 
 #[derive(Clone)]
 pub struct OnchainParams {
   // TODO Review this as could be dangerous to keep this in memory
+  pub eth_url: Url,
   pub private_key: [u8; 32],
   pub master_address: Option<Address>,
 }
@@ -112,24 +114,29 @@ pub trait Service: Clone + Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-struct Implementation<T>
-where
-  T: Transport + DuplexTransport,
-{
+struct Implementation {
   account_wallet: Address,
   account_storage: Address,
   params: OnchainParams,
-  web3: web3::Web3<T>,
+  web3: web3::Web3<Either<WebSocket, Ipc>>,
   deployments: HashMap<Address, (openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
 }
 
-pub async fn new_service<B, T>(params: OnchainParams, web3: web3::Web3<T>) -> Result<impl Service, Box<dyn Error>>
-where
-  B: std::future::Future<Output = web3::Result<Vec<web3::Result<serde_json::Value>>>> + Send + 'static,
-  T: web3::Transport + web3::BatchTransport<Batch = B> + DuplexTransport + Send + Sync + 'static,
-  <T as DuplexTransport>::NotificationStream: std::marker::Send + Unpin,
-  <T as Transport>::Out: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
-{
+pub async fn new_service(params: OnchainParams) -> Result<impl Service, Box<dyn Error>> {
+  info!("initializing onchain subsystem");
+
+  debug!("creating transport using {}", params.eth_url);
+  let transport = match params.eth_url.scheme() {
+    "unix" => Ok(Either::Right(web3::transports::ipc::Ipc::new(params.eth_url.path()).await?)),
+    "ws" | "wss" => Ok(Either::Left(
+      web3::transports::ws::WebSocket::new(params.eth_url.as_str()).await?,
+    )),
+    unsupported => Err(format!("unsupported schema: {}", unsupported)),
+  }?;
+
+  debug!("creating web3");
+  let web3 = web3::Web3::new(transport);
+
   let network_id = web3.net().version().await?;
   info!("connected to eth network with id {}", network_id);
 
@@ -180,11 +187,7 @@ where
   })
 }
 
-impl<F, T> Implementation<T>
-where
-  F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
-  T: Transport<Out = F> + DuplexTransport + Send + Sync + 'static,
-{
+impl Implementation {
   async fn sign(
     &self,
     lessee_address: &Address,
@@ -238,12 +241,7 @@ where
 }
 
 #[async_trait]
-impl<F, N, T> Service for Implementation<T>
-where
-  F: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
-  N: futures::Stream + Send + Unpin,
-  T: Transport<Out = F> + DuplexTransport<NotificationStream = N> + Send + Sync + 'static,
-{
+impl Service for Implementation {
   type StreamType = SelectAll<
     Pin<
       Box<
