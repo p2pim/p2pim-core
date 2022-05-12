@@ -73,3 +73,30 @@ pub struct ChainConfirmation {
   pub transaction_hash: web3::types::H256,
   pub timestamp: SystemTime,
 }
+
+#[derive(Debug, Clone)]
+pub struct Balance {
+  pub token_metadata: Option<TokenMetadata>,
+  pub storage_balance: StorageBalance,
+  pub wallet_balance: WalletBalance,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageBalance {
+  pub available: web3::types::U256,
+  pub locked_rents: web3::types::U256,
+  pub locked_lets: web3::types::U256,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletBalance {
+  pub available: web3::types::U256,
+  pub allowance: web3::types::U256,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenMetadata {
+  pub name: String,
+  pub symbol: String,
+  pub decimals: u8,
+}

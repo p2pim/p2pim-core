@@ -42,7 +42,7 @@ async fn run_withdraw(
     .get_ref()
     .balance
     .as_ref()
-    .and_then(|v| v.token.as_ref())
+    .and_then(|v| v.token_metadata.as_ref())
     .map(|v| v.decimals)
     .ok_or("TODO: invalid response")? as i64;
   let abs_amount: BigDecimal = amount * BigDecimal::new(1.into(), -decimals);

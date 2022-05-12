@@ -4,28 +4,26 @@ use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
+use crate::proto::api::balance_entry::{StorageBalance, TokenMetadata, WalletBalance};
 use crate::proto::api::list_storage_rented_response::StorageRentedData;
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
 use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
   GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, ListStorageRentedRequest,
-  ListStorageRentedResponse, StoreRequest, StoreResponse, TokenInfo, WithdrawRequest, WithdrawResponse,
+  ListStorageRentedResponse, StoreRequest, StoreResponse, WithdrawRequest, WithdrawResponse,
 };
 use crate::proto::libp2p::PeerId;
-use crate::types::LeaseTerms;
+use crate::types::{Balance, LeaseTerms};
 use crate::{onchain, p2p, persistence, reactor};
 use futures::StreamExt;
-use log::{info, warn};
-use p2pim_ethereum_contracts;
-use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
+use log::info;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use web3::types::U256;
+use web3::types::Address;
 
 pub async fn listen_and_serve<TOnchain, TP2p, TPersistence, TReactor>(
   rpc_addr: SocketAddr,
-  deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   onchain: TOnchain,
   p2p: TP2p,
   reactor: TReactor,
@@ -39,10 +37,9 @@ where
 {
   info!("starting gRPC server on {}", rpc_addr);
   let p2pim_impl = P2pimImpl {
-    deployments,
     onchain,
-    reactor,
     persistence,
+    reactor,
   };
   let swarm_impl = SwarmImpl { p2p };
   Server::builder()
@@ -60,21 +57,9 @@ where
   TPersistence: persistence::Service,
   TReactor: reactor::Service,
 {
-  deployments: Vec<(openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
   onchain: TOnchain,
-  reactor: TReactor,
   persistence: TPersistence,
-}
-
-impl<TOnchain, TPersistence, TReactor> P2pimImpl<TOnchain, TPersistence, TReactor>
-where
-  TOnchain: onchain::Service,
-  TPersistence: persistence::Service,
-  TReactor: reactor::Service,
-{
-  fn deployment(&self, token_addr: web3::types::Address) -> Option<&(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
-    self.deployments.iter().find(|(t, _)| t.address() == token_addr)
-  }
+  reactor: TReactor,
 }
 
 #[tonic::async_trait]
@@ -85,15 +70,13 @@ where
   TReactor: reactor::Service,
 {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
-    let balance = futures::stream::iter(self.deployments.iter())
-      .then(|(token, adjudicator)| async move {
-        read_balances(
-          self.onchain.account_wallet(),
-          self.onchain.account_storage(),
-          token,
-          adjudicator,
-        )
-        .await
+    let balance = futures::stream::iter(self.onchain.deployed_tokens().iter())
+      .then(|token_address| async move {
+        self
+          .onchain
+          .balance(token_address)
+          .await
+          .map(|b| convert_balance(*token_address, b))
       })
       .collect::<Vec<Result<BalanceEntry, _>>>()
       .await
@@ -109,23 +92,20 @@ where
   }
 
   async fn get_balance(&self, request: Request<GetBalanceRequest>) -> Result<Response<GetBalanceResponse>, Status> {
-    let token_addr = request
+    let token_addr: web3::types::Address = request
       .get_ref()
       .token_address
       .as_ref()
       .ok_or(Status::invalid_argument("token_address empty"))?
       .into();
-    let (token, adjudicator) = self
-      .deployment(token_addr)
-      .ok_or(Status::not_found("adjudicator not found for the token"))?;
-    let balance = read_balances(
-      self.onchain.account_wallet(),
-      self.onchain.account_storage(),
-      token,
-      adjudicator,
-    )
-    .await
-    .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e)))?;
+
+    let balance = self
+      .onchain
+      .balance(&token_addr)
+      .await
+      .map(|b| convert_balance(token_addr, b))
+      .map_err(|e| Status::internal(format!("[TODO(formatting)] {}", e)))?;
+
     Ok(Response::new(GetBalanceResponse { balance: Some(balance) }))
   }
 
@@ -137,14 +117,9 @@ where
       .ok_or(Status::invalid_argument("token_address empty"))?
       .into();
 
-    let (token, adjudicator) = self
-      .deployment(token_addr)
-      .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
-
-    let result = token
-      .approve(adjudicator.address(), U256::max_value())
-      .confirmations(0)
-      .send()
+    let result = self
+      .onchain
+      .approve(&token_addr)
       .await
       .map_err(|e| Status::internal(format!("error sending approval transaction: {}", e)))?;
     Ok(Response::new(ApproveResponse {
@@ -166,13 +141,9 @@ where
       .ok_or(Status::invalid_argument("amount empty"))?
       .into();
 
-    let (_, adjudicator) = self
-      .deployment(token_addr)
-      .ok_or(Status::invalid_argument("adjudicator not found for the token"))?;
-    let result = adjudicator
-      .deposit(amount, self.onchain.account_storage())
-      .confirmations(0)
-      .send()
+    let result = self
+      .onchain
+      .deposit(&token_addr, amount)
       .await
       .map_err(|e| Status::internal(format!("error sending deposit transaction: {}", e)))?;
     Ok(Response::new(DepositResponse {
@@ -264,40 +235,24 @@ where
   }
 }
 
-async fn read_balances(
-  account_wallet: web3::types::Address,
-  account_storage: web3::types::Address,
-  token: &openzeppelin::IERC20Metadata,
-  adjudicator: &P2pimAdjudicator,
-) -> Result<BalanceEntry, ethcontract::errors::MethodError> {
-  fn ok_or_warn<R, E: std::fmt::Display>(result: Result<R, E>, method: &str, address: web3::types::Address) -> Option<R> {
-    if let Err(e) = result.as_ref() {
-      warn!("error calling `{}` method error={} address={}", method, e, address)
-    }
-    result.ok()
-  }
-
-  let (available_p2pim, locked_rents, locked_lets) = adjudicator.balance(account_storage).call().await?;
-  let name = ok_or_warn(token.name().call().await, "name", token.address());
-  let symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
-  let decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
-
-  let available_account = token.balance_of(account_wallet).call().await?;
-  let allowance_account = token.allowance(account_wallet, adjudicator.address()).call().await?;
-
-  Ok(BalanceEntry {
-    token: Some(TokenInfo {
-      token_address: Some(From::from(&token.address())),
-      name: name.unwrap_or_default(),
-      decimals: From::from(decimals.unwrap_or_default()),
-      symbol: symbol.unwrap_or_default(),
+fn convert_balance(token_address: Address, balance: Balance) -> BalanceEntry {
+  BalanceEntry {
+    token_address: Some(token_address.into()),
+    token_metadata: balance.token_metadata.map(|m| TokenMetadata {
+      symbol: m.symbol,
+      name: m.name,
+      decimals: m.decimals as u32,
     }),
-    available_account: Some(From::from(&available_account)),
-    allowed_account: Some(From::from(&allowance_account)),
-    available_p2pim: Some(From::from(&available_p2pim)),
-    locked_rents: Some(From::from(&locked_rents)),
-    locked_lets: Some(From::from(&locked_lets)),
-  })
+    storage_balance: Some(StorageBalance {
+      available: Some(balance.storage_balance.available.into()),
+      locked_rents: Some(balance.storage_balance.locked_rents.into()),
+      locked_lets: Some(balance.storage_balance.locked_lets.into()),
+    }),
+    wallet_balance: Some(WalletBalance {
+      available: Some(balance.wallet_balance.available.into()),
+      allowance: Some(balance.wallet_balance.allowance.into()),
+    }),
+  }
 }
 
 struct SwarmImpl<TP2p>

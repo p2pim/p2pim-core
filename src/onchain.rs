@@ -1,11 +1,11 @@
-use crate::types::{DataParameters, LeaseTerms, Signature};
+use crate::types::{Balance, DataParameters, LeaseTerms, Signature, StorageBalance, TokenMetadata, WalletBalance};
 use crate::utils::ethereum::IntoAddress;
-use ethcontract::errors::EventError;
+use ethcontract::errors::{EventError, MethodError};
 use ethcontract::transaction::TransactionResult;
 use ethcontract::{Account, Bytes, Event, EventStatus, PrivateKey};
 use futures::stream::SelectAll;
 use futures::{select, Stream, StreamExt};
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 use p2pim_ethereum_contracts::third::openzeppelin;
 use p2pim_ethereum_contracts::{P2pimAdjudicator, P2pimMasterRecord};
 use secp256k1::Secp256k1;
@@ -13,6 +13,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::pin::Pin;
 use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,10 +25,43 @@ use web3::{DuplexTransport, Transport};
 
 #[derive(Clone)]
 pub struct OnchainParams {
+  // TODO Review this as could be dangerous to keep this in memory
   pub private_key: [u8; 32],
   pub master_address: Option<Address>,
 }
 
+// TODO should it be just Error
+#[derive(Debug)]
+pub enum OnchainError {
+  TokenNotDeployed(Address),
+  MethodError(MethodError),
+}
+
+impl Display for OnchainError {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    match self {
+      OnchainError::TokenNotDeployed(_) => f.write_str("token not deployed"),
+      OnchainError::MethodError(err) => std::fmt::Display::fmt(err, f),
+    }
+  }
+}
+
+impl Error for OnchainError {
+  fn source(&self) -> Option<&(dyn Error + 'static)> {
+    match self {
+      OnchainError::TokenNotDeployed(_) => None,
+      OnchainError::MethodError(err) => Some(err),
+    }
+  }
+}
+
+impl From<MethodError> for OnchainError {
+  fn from(value: MethodError) -> Self {
+    OnchainError::MethodError(value)
+  }
+}
+
+// TODO Better error handling, not returning dyn Error
 #[async_trait]
 pub trait Service: Clone + Send + Sync + 'static {
   type StreamType: Stream<Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>>
@@ -68,7 +102,13 @@ pub trait Service: Clone + Send + Sync + 'static {
     Box<dyn Error>,
   >;
 
-  async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
+  fn deployed_tokens(&self) -> Vec<Address>;
+  async fn balance(&self, token_address: &Address) -> Result<Balance, OnchainError>;
+
+  async fn withdraw(&self, token_address: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
+  async fn deposit(&self, token_address: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
+
+  async fn approve(&self, token_address: &Address) -> Result<TransactionResult, Box<dyn Error>>;
 }
 
 #[derive(Clone)]
@@ -90,6 +130,9 @@ where
   <T as DuplexTransport>::NotificationStream: std::marker::Send + Unpin,
   <T as Transport>::Out: std::future::Future<Output = web3::Result<serde_json::Value>> + Send + 'static,
 {
+  let network_id = web3.net().version().await?;
+  info!("connected to eth network with id {}", network_id);
+
   debug!("initializing master record contract");
   let instance = if let Some(addr) = params.master_address {
     Ok(P2pimMasterRecord::at(&web3, addr))
@@ -187,6 +230,10 @@ where
         .sign(eth_message_hash.as_bytes(), None)
         .expect("Why can fail?"),
     )
+  }
+
+  fn deployment(&self, token_address: &Address) -> Option<(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
+    self.deployments.get(token_address).cloned()
   }
 }
 
@@ -386,6 +433,48 @@ where
     Ok(result?)
   }
 
+  fn deployed_tokens(&self) -> Vec<Address> {
+    self.deployments.keys().cloned().collect()
+  }
+
+  async fn balance(&self, token_address: &Address) -> Result<Balance, OnchainError> {
+    fn ok_or_warn<R, E: std::fmt::Display>(result: Result<R, E>, method: &str, address: web3::types::Address) -> Option<R> {
+      if let Err(e) = result.as_ref() {
+        warn!("error calling `{}` method error={} address={}", method, e, address)
+      }
+      result.ok()
+    }
+
+    let (token, adjudicator) = self
+      .deployment(token_address)
+      .ok_or(OnchainError::TokenNotDeployed(*token_address))?;
+    let (available_p2pim, locked_rents, locked_lets) = adjudicator.balance(self.account_storage).call().await?;
+    let maybe_name = ok_or_warn(token.name().call().await, "name", token.address());
+    let maybe_symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
+    let maybe_decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
+
+    let available_account = token.balance_of(self.account_wallet).call().await?;
+    let allowance_account = token.allowance(self.account_wallet, adjudicator.address()).call().await?;
+
+    let token_metadata = match (maybe_name, maybe_symbol, maybe_decimals) {
+      (Some(name), Some(symbol), Some(decimals)) => Some(TokenMetadata { name, symbol, decimals }),
+      _ => None,
+    };
+
+    Ok(Balance {
+      token_metadata,
+      storage_balance: StorageBalance {
+        available: available_p2pim,
+        locked_rents,
+        locked_lets,
+      },
+      wallet_balance: WalletBalance {
+        available: available_account,
+        allowance: allowance_account,
+      },
+    })
+  }
+
   async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>> {
     let (_, adjudicator) = self.deployments.get(token_addres).ok_or("deployment for token not found")?;
     Ok(
@@ -393,6 +482,22 @@ where
         .methods()
         .withdraw(amount, self.account_wallet)
         .from(Account::Offline(PrivateKey::from_raw(self.params.private_key)?, None)) // TODO should we use the chain id?
+        .send()
+        .await?,
+    )
+  }
+
+  async fn deposit(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>> {
+    let (_, adjudicator) = self.deployments.get(token_addres).ok_or("deployment for token not found")?;
+    Ok(adjudicator.methods().deposit(amount, self.account_storage).send().await?)
+  }
+
+  async fn approve(&self, token_address: &Address) -> Result<TransactionResult, Box<dyn Error>> {
+    let (token, adjudicator) = self.deployments.get(token_address).ok_or("deployment for token not found")?;
+    Ok(
+      token
+        .approve(adjudicator.address(), U256::max_value())
+        .confirmations(0)
         .send()
         .await?,
     )

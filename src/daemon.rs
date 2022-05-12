@@ -2,8 +2,6 @@ use crate::{onchain, p2p};
 use futures::future::try_join_all;
 use libp2p::identity::{secp256k1, Keypair};
 use log::{debug, info};
-use p2pim_ethereum_contracts;
-use p2pim_ethereum_contracts::{third::openzeppelin, P2pimAdjudicator};
 
 use std::error::Error;
 use std::future::Future;
@@ -67,39 +65,6 @@ where
   debug!("creating web3");
   let web3 = web3::Web3::new(transport);
 
-  let network_id = web3.net().version().await?;
-  info!("connected to eth network with id {}", network_id);
-
-  debug!("initializing master record contract");
-  let instance = if let Some(addr) = master_addr {
-    Ok(p2pim_ethereum_contracts::P2pimMasterRecord::at(&web3, addr))
-  } else {
-    p2pim_ethereum_contracts::P2pimMasterRecord::deployed(&web3).await
-  }?;
-  debug!("using master record contract on address {}", instance.address());
-
-  debug!("reading accounts");
-  let accounts = web3.eth().accounts().await?;
-  let account_wallet = accounts.get(0).map(Clone::clone).ok_or("no accounts configured")?;
-  debug!("using account for wallet {:?}", account_wallet);
-
-  // TODO react to new deployments
-  debug!("reading master record deployments");
-  let deployments = instance
-    .methods()
-    .deployments()
-    .call()
-    .await?
-    .into_iter()
-    .map(|(token, adjudicator_addr)| {
-      (
-        openzeppelin::IERC20Metadata::at(&web3, token),
-        P2pimAdjudicator::at(&web3, adjudicator_addr),
-      )
-    })
-    .collect();
-  debug!("found deployments {:?}", deployments);
-
   let secp256k1_keypair = secp256k1::Keypair::generate();
   let keypair = Keypair::Secp256k1(secp256k1_keypair.clone());
   let p2p = p2p::create_p2p(keypair).await?;
@@ -123,7 +88,6 @@ where
 
   let grpc: ServeFuture = Box::pin(crate::grpc::listen_and_serve(
     rpc_addr,
-    deployments,
     onchain.clone(),
     p2p.clone(),
     reactor.clone(),

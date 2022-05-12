@@ -41,9 +41,9 @@ async fn run_info(rpc_url: String) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
-  let token = entry.token.as_ref().ok_or("missing token info")?;
+  let token = entry.token_metadata.as_ref().ok_or("missing token info")?;
 
-  let token_address: web3::types::Address = convert_or_err(token.token_address.as_ref(), "missing token address")?;
+  let token_address: web3::types::Address = convert_or_err(entry.token_address.as_ref(), "missing token address")?;
   let token_name = &token.name;
   let token_symbol = &token.symbol;
 
@@ -63,13 +63,31 @@ fn format_balance(entry: &BalanceEntry) -> Result<String, Box<dyn Error>> {
   let token_decimals = From::from(token.decimals);
 
   let to_big_decimal = |v| BigDecimal::new(v, token_decimals);
-  let available_account =
-    convert_or_err(entry.available_account.as_ref(), "missing available account amount").map(to_big_decimal)?;
-  let allowed_account =
-    convert_or_err(entry.allowed_account.as_ref(), "missing allowed account amount").map(to_big_decimal)?;
-  let available_p2pim = convert_or_err(entry.available_p2pim.as_ref(), "missing available p2p amount").map(to_big_decimal)?;
-  let locked_rents = convert_or_err(entry.locked_rents.as_ref(), "missing locked rents amount").map(to_big_decimal)?;
-  let locked_lets = convert_or_err(entry.locked_lets.as_ref(), "missing locked lets amount").map(to_big_decimal)?;
+  let available_account = convert_or_err(
+    entry.wallet_balance.as_ref().and_then(|e| e.available.as_ref()),
+    "missing available account amount",
+  )
+  .map(to_big_decimal)?;
+  let allowed_account = convert_or_err(
+    entry.wallet_balance.as_ref().and_then(|e| e.allowance.as_ref()),
+    "missing allowed account amount",
+  )
+  .map(to_big_decimal)?;
+  let available_p2pim = convert_or_err(
+    entry.storage_balance.as_ref().and_then(|s| s.available.as_ref()),
+    "missing available p2p amount",
+  )
+  .map(to_big_decimal)?;
+  let locked_rents = convert_or_err(
+    entry.storage_balance.as_ref().and_then(|s| s.locked_rents.as_ref()),
+    "missing locked rents amount",
+  )
+  .map(to_big_decimal)?;
+  let locked_lets = convert_or_err(
+    entry.storage_balance.as_ref().and_then(|s| s.locked_lets.as_ref()),
+    "missing locked lets amount",
+  )
+  .map(to_big_decimal)?;
 
   writeln!(result, "    Available Account: {}", available_account)?;
   writeln!(result, "    Allowed Account  : {}", allowed_account)?;
