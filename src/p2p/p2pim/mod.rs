@@ -2,7 +2,8 @@ use crate::libp2p::protobuf;
 use crate::libp2p::protobuf::handler;
 use crate::proto;
 use crate::proto::p2p::protocol_message::Message;
-use crate::types::{LeaseTerms, Signature};
+use crate::proto::p2p::{protocol_message, ChallengeRequest, ChallengeResponse};
+use crate::types::{ChallengeKey, ChallengeProof, LeaseTerms, Signature};
 use libp2p::core::connection::ConnectionId;
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::{
@@ -13,11 +14,12 @@ use log::warn;
 use std::collections::VecDeque;
 use std::convert::{TryFrom, TryInto};
 use std::task::{Context, Poll, Waker};
+use web3::types::H256;
 
 const P2PIM_PROTOCOL_NAME: &[u8] = b"/p2pim/protobuf/0.1.0";
 
 pub struct Behaviour {
-  command_queue: VecDeque<Command>,
+  message_queue: VecDeque<(PeerId, protocol_message::Message)>,
   event_queue: VecDeque<Event>,
   waker: Option<Waker>,
 }
@@ -31,14 +33,40 @@ impl Default for Behaviour {
 impl Behaviour {
   pub fn new() -> Self {
     Behaviour {
-      command_queue: VecDeque::new(),
+      message_queue: VecDeque::new(),
       event_queue: VecDeque::new(),
       waker: None,
     }
   }
 
   pub fn send_proposal(&mut self, peer_id: PeerId, lease_proposal: LeaseProposal) {
-    self.command_queue.push_back(Command::SendProposal(peer_id, lease_proposal));
+    self
+      .message_queue
+      .push_back((peer_id, Message::LeaseProposal(lease_proposal.into())));
+    self.wake()
+  }
+
+  pub fn send_challenge(&mut self, peer_id: PeerId, challenge_key: ChallengeKey) {
+    self.message_queue.push_back((
+      peer_id,
+      Message::ChallengeRequest(ChallengeRequest {
+        nonce: challenge_key.nonce,
+        block_number: challenge_key.block_number,
+      }),
+    ));
+    self.wake()
+  }
+
+  pub fn send_challenge_proof(&mut self, peer_id: PeerId, challenge_key: ChallengeKey, challenge_proof: ChallengeProof) {
+    self.message_queue.push_back((
+      peer_id,
+      Message::ChallengeResponse(ChallengeResponse {
+        nonce: challenge_key.nonce,
+        block_number: challenge_key.block_number,
+        block_data: challenge_proof.block_data,
+        proof: challenge_proof.proof.into_iter().map(|p| H256(p).into()).collect(),
+      }),
+    ));
     self.wake()
   }
 
@@ -49,13 +77,12 @@ impl Behaviour {
   }
 }
 
-enum Command {
-  SendProposal(PeerId, LeaseProposal),
-}
-
 #[derive(Debug)]
 pub enum Event {
   ReceivedLeaseProposal(PeerId, LeaseProposal),
+  // TODO make u64 + u32 a type `challenge`
+  ReceivedChallengeRequest(PeerId, ChallengeKey),
+  ReceivedChallengeResponse(PeerId, ChallengeKey, ChallengeProof),
 }
 
 #[derive(Debug)]
@@ -155,13 +182,31 @@ impl NetworkBehaviour for Behaviour {
   ) {
     match event {
       handler::Event::MessageReceived(message) => match message.message {
+        Some(Message::ChallengeRequest(challenge_request)) => self.event_queue.push_back(Event::ReceivedChallengeRequest(
+          peer_id,
+          ChallengeKey {
+            nonce: challenge_request.nonce,
+            block_number: challenge_request.block_number,
+          },
+        )),
+        Some(Message::ChallengeResponse(challenge_response)) => self.event_queue.push_back(Event::ReceivedChallengeResponse(
+          peer_id,
+          ChallengeKey {
+            nonce: challenge_response.nonce,
+            block_number: challenge_response.block_number,
+          },
+          ChallengeProof {
+            block_data: challenge_response.block_data,
+            proof: challenge_response.proof.into_iter().map(|h| H256::from(&h).0).collect(),
+          },
+        )),
         Some(Message::LeaseProposal(lease_proposal)) => {
           match lease_proposal.try_into().map(|p| Event::ReceivedLeaseProposal(peer_id, p)) {
             Err(e) => warn!("invalid lease proposal received: {}", e),
             Ok(p) => self.event_queue.push_back(p),
           }
         }
-        Some(_) => todo!("handle other messages"),
+        Some(Message::LeaseRejection(_)) => todo!("handle lease rejection"),
         None => warn!("invalid message received from peer {}: no inner message", peer_id),
       },
     };
@@ -172,22 +217,22 @@ impl NetworkBehaviour for Behaviour {
     cx: &mut Context<'_>,
     _: &mut impl PollParameters,
   ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-    if let Some(command) = self.command_queue.pop_front() {
-      match command {
-        Command::SendProposal(peer_id, proposal) => {
-          return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-            peer_id,
-            event: proto::p2p::ProtocolMessage {
-              message: Some(Message::LeaseProposal(proposal.into())),
-            },
-            handler: NotifyHandler::Any,
-          })
-        }
-      }
+    let ready_send_message = |peer_id, message| {
+      Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+        peer_id,
+        event: proto::p2p::ProtocolMessage { message: Some(message) },
+        handler: NotifyHandler::Any,
+      })
+    };
+
+    if let Some((peer_id, message)) = self.message_queue.pop_front() {
+      return ready_send_message(peer_id, message);
     }
+
     if let Some(event) = self.event_queue.pop_front() {
       return Poll::Ready(NetworkBehaviourAction::GenerateEvent(event));
     }
+
     if let Some(waker) = self.waker.as_ref() {
       if !cx.waker().will_wake(waker) {
         self.waker = Some(cx.waker().clone());
@@ -195,6 +240,7 @@ impl NetworkBehaviour for Behaviour {
     } else {
       self.waker = Some(cx.waker().clone());
     }
+
     Poll::Pending
   }
 }

@@ -1,5 +1,6 @@
 use super::p2pim;
 use super::p2pim::LeaseProposal;
+use crate::types::{ChallengeKey, ChallengeProof};
 use libp2p::identify::{Identify, IdentifyConfig, IdentifyEvent, IdentifyInfo};
 use libp2p::identity::PublicKey;
 use libp2p::mdns::{Mdns, MdnsConfig, MdnsEvent};
@@ -30,7 +31,19 @@ pub struct Behaviour {
 
 #[derive(Debug)]
 pub enum Event {
-  ReceivedLeaseProposal { peer_id: PeerId, proposal: LeaseProposal },
+  ReceivedLeaseProposal {
+    peer_id: PeerId,
+    proposal: LeaseProposal,
+  },
+  ReceivedChallengeRequest {
+    peer_id: PeerId,
+    challenge_key: ChallengeKey,
+  },
+  ReceivedChallengeResponse {
+    peer_id: PeerId,
+    challenge_key: ChallengeKey,
+    challenge_proof: ChallengeProof,
+  },
 }
 
 #[derive(Debug)]
@@ -131,6 +144,16 @@ impl NetworkBehaviourEventProcess<p2pim::Event> for Behaviour {
       p2pim::Event::ReceivedLeaseProposal(peer_id, proposal) => self
         .events_queue
         .push_back(Event::ReceivedLeaseProposal { peer_id, proposal }),
+      p2pim::Event::ReceivedChallengeRequest(peer_id, challenge_key) => self
+        .events_queue
+        .push_back(Event::ReceivedChallengeRequest { peer_id, challenge_key }),
+      p2pim::Event::ReceivedChallengeResponse(peer_id, challenge_key, challenge_proof) => {
+        self.events_queue.push_back(Event::ReceivedChallengeResponse {
+          peer_id,
+          challenge_key,
+          challenge_proof,
+        })
+      }
     }
   }
 }

@@ -1,17 +1,20 @@
 use crate::p2p::behaviour::Event;
 use crate::p2p::p2pim::LeaseProposal;
-use crate::types::{ChainConfirmation, Lease, LeaseTerms};
+use crate::types::{ChainConfirmation, ChallengeKey, ChallengeProof, Lease, LeaseTerms};
 use crate::utils::ethereum::IntoAddress;
-use crate::{data, onchain, p2p, persistence};
+use crate::{cryptography, data, onchain, p2p, persistence};
 use ethcontract::transaction::TransactionResult;
 use ethcontract::{EventMetadata, EventStatus};
 use futures::future::join_all;
 use futures::{FutureExt, StreamExt};
 use libp2p::PeerId;
 use log::{error, info, trace, warn};
+use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
+use std::hash::Hash;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tonic::async_trait;
 use web3::types::{BlockId, H256};
@@ -19,6 +22,7 @@ use web3::types::{BlockId, H256};
 #[async_trait]
 pub trait Service: Clone + Send + Sync + 'static {
   async fn lease(&self, peer_id: PeerId, terms: LeaseTerms, data: Vec<u8>) -> Result<H256, Box<dyn Error>>;
+  async fn challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> Result<(), Box<dyn Error>>;
 }
 
 #[derive(Clone)]
@@ -33,6 +37,34 @@ where
   onchain: TOnchain,
   p2p: TP2p,
   persistence: TPersistence,
+  pending_challenges: Arc<Mutex<OneshotListerners<(PeerId, ChallengeKey), ChallengeProof>>>,
+}
+
+struct OneshotListerners<K: Hash + Eq, V: Clone> {
+  inner: HashMap<K, Vec<futures::channel::oneshot::Sender<V>>>,
+}
+
+impl<K: Hash + Eq, V: Clone> OneshotListerners<K, V> {
+  fn new() -> Self {
+    OneshotListerners { inner: HashMap::new() }
+  }
+
+  fn new_listener(&mut self, key: K) -> impl Future<Output = V> {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    self.inner.entry(key).or_default().push(sender);
+    receiver.map(|r| r.expect("we never cancel the sender"))
+  }
+
+  fn notify(&mut self, key: K, value: V) -> usize {
+    let senders = self.inner.remove(&key).unwrap_or_else(Vec::new);
+    let res = senders.len();
+    senders.into_iter().for_each(|sender| {
+      if sender.send(value.clone()).is_err() {
+        error!("TODO receiver has been dropped, this should not happen");
+      }
+    });
+    res
+  }
 }
 
 pub fn new_service<TData, TOnchain, TP2p, TPersistence>(
@@ -52,6 +84,7 @@ where
     onchain,
     p2p,
     persistence,
+    pending_challenges: Arc::new(Mutex::new(OneshotListerners::new())),
   };
 
   type ReactorFuture = Pin<Box<dyn Future<Output = ()>>>;
@@ -69,6 +102,23 @@ where
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
 {
+  fn add_challenge_listener(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> impl Future<Output = ChallengeProof> {
+    self.pending_challenges.lock().unwrap().new_listener((peer_id, challenge_key))
+  }
+
+  fn notify_challenge_listeners(
+    &self,
+    peer_id: PeerId,
+    challenge_key: ChallengeKey,
+    challenge_proof: ChallengeProof,
+  ) -> usize {
+    self
+      .pending_challenges
+      .lock()
+      .unwrap()
+      .notify((peer_id, challenge_key), challenge_proof)
+  }
+
   async fn process_p2p_events(mut self) {
     while let Some(ev) = self.p2p.next().await {
       trace!("p2p: {:?}", ev);
@@ -78,7 +128,29 @@ where
           tokio::task::spawn(async move {
             let result = self_clone.seal_lease(peer_id, proposal).await;
             if let Err(e) = result {
-              warn!("error while trying to seal deal: {}", e);
+              error!("TODO (Handling): error while trying to seal deal: {}", e);
+            }
+          });
+        }
+        Event::ReceivedChallengeResponse {
+          peer_id,
+          challenge_key,
+          challenge_proof,
+        } => {
+          let count = self.notify_challenge_listeners(peer_id, challenge_key.clone(), challenge_proof);
+          if count == 0 {
+            warn!(
+              "received a proof not expected peer_id={} nonce={} block_number={}",
+              peer_id, challenge_key.nonce, challenge_key.block_number
+            );
+          }
+        }
+        Event::ReceivedChallengeRequest { peer_id, challenge_key } => {
+          let self_clone = self.clone();
+          tokio::task::spawn(async move {
+            let result = self_clone.send_proof(peer_id, challenge_key).await;
+            if let Err(e) = result {
+              error!("TODO (Handling): error while trying to send proof: {:?}", e);
             }
           });
         }
@@ -102,6 +174,47 @@ where
         }
       }
     }
+  }
+
+  async fn seal_lease(&self, peer_id: PeerId, proposal: LeaseProposal) -> Result<TransactionResult, Box<dyn Error>>
+  where
+    TData: data::Service,
+    TOnchain: onchain::Service,
+    TP2p: p2p::Service,
+  {
+    let lessee_address = self
+      .p2p
+      .find_public_key(&peer_id)
+      .as_ref()
+      .map(IntoAddress::into_address)
+      .ok_or("peer id not found")?;
+    // TODO check if the nonce is duplicated
+    let data_parameters = self.data.store(peer_id, proposal.nonce, proposal.data.as_slice()).await?;
+
+    let result = self
+      .onchain
+      .seal_lease(
+        lessee_address,
+        proposal.nonce,
+        proposal.lease_terms,
+        data_parameters,
+        proposal.signature,
+      )
+      .await?;
+    info!("lease sealed peer_id={} transaction_result={:?}", peer_id, result);
+    Ok(result)
+  }
+
+  async fn send_proof(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> Result<(), Box<dyn Error>> {
+    let (block_data, proof) = self
+      .data
+      .proof(peer_id, challenge_key.nonce, challenge_key.block_number as usize)
+      .await?;
+    self
+      .p2p
+      .send_challenge_proof(peer_id, challenge_key, ChallengeProof { block_data, proof })
+      .await;
+    Ok(())
   }
 
   async fn process_onchain_event(
@@ -139,34 +252,6 @@ where
       _ => error!("received event does not belong to us: {:?}", event),
     };
     Ok(())
-  }
-
-  async fn seal_lease(&self, peer_id: PeerId, proposal: LeaseProposal) -> Result<TransactionResult, Box<dyn Error>>
-  where
-    TData: data::Service,
-    TOnchain: onchain::Service,
-    TP2p: p2p::Service,
-  {
-    let lessee_address = self
-      .p2p
-      .find_public_key(&peer_id)
-      .as_ref()
-      .map(IntoAddress::into_address)
-      .ok_or("peer id not found")?;
-    let data_parameters = self.data.parameters(proposal.data.as_slice()).await;
-
-    let result = self
-      .onchain
-      .seal_lease(
-        lessee_address,
-        proposal.nonce,
-        proposal.lease_terms,
-        data_parameters,
-        proposal.signature,
-      )
-      .await?;
-    info!("lease sealed peer_id={} transaction_result={:?}", peer_id, result);
-    Ok(result)
   }
 }
 
@@ -223,6 +308,36 @@ where
         }
       }
       None => Err("lease timed out".into()),
+    }
+  }
+
+  async fn challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> Result<(), Box<dyn Error>> {
+    let ChallengeKey { nonce, block_number } = challenge_key;
+    let lease = self.persistence.rent_get(peer_id, nonce).await.ok_or("lease not found")?;
+    if lease.data_parameters.size < (block_number as usize) * cryptography::BLOCK_SIZE_BYTES {
+      return Err("block number is out of bounds".into());
+    }
+
+    let receiver = self.add_challenge_listener(peer_id, challenge_key.clone());
+    self.p2p.send_challenge(peer_id, challenge_key.clone()).await;
+
+    // TODO timeout
+    let challenge_proof = receiver.await;
+    trace!("proof received peer={}", peer_id);
+
+    let valid = self
+      .data
+      .verify(
+        lease.data_parameters,
+        block_number,
+        challenge_proof.block_data.as_slice(),
+        challenge_proof.proof,
+      )
+      .await;
+    if valid {
+      Ok(())
+    } else {
+      Err("proof not valid".into())
     }
   }
 }

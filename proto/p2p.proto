@@ -10,6 +10,8 @@ message ProtocolMessage {
   oneof message {
     LeaseProposal lease_proposal = 1;
     LeaseRejection lease_rejection = 2;
+    ChallengeRequest challenge_request = 3;
+    ChallengeResponse challenge_response = 4;
   }
 }
 
@@ -31,4 +33,17 @@ message LeaseProposal {
 message LeaseRejection {
   uint64 nonce = 1;
   string reason = 2;
+}
+
+message ChallengeRequest {
+  uint64 nonce = 1;
+  uint32 block_number = 2;
+}
+
+message ChallengeResponse {
+  uint64 nonce = 1;
+  uint32 block_number = 2;
+  bytes block_data = 3;
+  // TODO H256 is specific to one hash function
+  repeated solidity.H256 proof = 4;
 }

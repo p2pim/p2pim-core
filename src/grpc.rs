@@ -9,12 +9,13 @@ use crate::proto::api::list_storage_rented_response::StorageRentedData;
 use crate::proto::api::p2pim_server::{P2pim, P2pimServer};
 use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
-  ApproveRequest, ApproveResponse, BalanceEntry, DepositRequest, DepositResponse, GetBalanceRequest, GetBalanceResponse,
-  GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest, GetInfoResponse, ListStorageRentedRequest,
-  ListStorageRentedResponse, StoreRequest, StoreResponse, WithdrawRequest, WithdrawResponse,
+  ApproveRequest, ApproveResponse, BalanceEntry, ChallengeRequest, ChallengeResponse, DepositRequest, DepositResponse,
+  GetBalanceRequest, GetBalanceResponse, GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest,
+  GetInfoResponse, ListStorageRentedRequest, ListStorageRentedResponse, StoreRequest, StoreResponse, WithdrawRequest,
+  WithdrawResponse,
 };
 use crate::proto::libp2p::PeerId;
-use crate::types::{Balance, LeaseTerms};
+use crate::types::{Balance, ChallengeKey, LeaseTerms};
 use crate::{onchain, p2p, persistence, reactor};
 use futures::StreamExt;
 use log::info;
@@ -209,6 +210,24 @@ where
     Ok(Response::new(StoreResponse {
       transaction_hash: Some(result.into()),
     }))
+  }
+
+  async fn challenge(&self, request: Request<ChallengeRequest>) -> Result<Response<ChallengeResponse>, Status> {
+    let req = request.get_ref();
+    let peer_id = req
+      .peer_id
+      .as_ref()
+      .ok_or(Status::invalid_argument("peer empty"))?
+      .try_into()
+      .map_err(|e| Status::invalid_argument(format!("invalid peer id: {}", e)))?;
+    let nonce = req.nonce;
+    let block_number = req.block_number;
+    self
+      .reactor
+      .challenge(peer_id, ChallengeKey { nonce, block_number })
+      .await
+      .map_err(|e| Status::unknown(format!("error challenging a lease: {}", e)))?;
+    Ok(Response::new(ChallengeResponse {}))
   }
 
   async fn list_storage_rented(

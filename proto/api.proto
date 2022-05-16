@@ -12,12 +12,23 @@ service P2pim {
   rpc Deposit (DepositRequest) returns (DepositResponse);
   rpc Withdraw (WithdrawRequest) returns (WithdrawResponse);
   rpc Store (StoreRequest) returns (StoreResponse);
+  rpc Challenge (ChallengeRequest) returns (ChallengeResponse);
   rpc ListStorageRented (ListStorageRentedRequest) returns (ListStorageRentedResponse);
   // rpc ListStorageLet (ListSotorageLetRequest) returns (ListStorageLetResponse);
 }
 
 service Swarm {
   rpc GetConnectedPeers (GetConnectedPeersRequest) returns (GetConnectedPeersResponse);
+}
+
+message ChallengeRequest {
+  libp2p.PeerId peer_id = 1;
+  uint64 nonce = 2;
+  uint32 block_number = 3;
+}
+
+message ChallengeResponse {
+
 }
 
 message ListStorageRentedRequest {

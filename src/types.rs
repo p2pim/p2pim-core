@@ -100,3 +100,15 @@ pub struct TokenMetadata {
   pub symbol: String,
   pub decimals: u8,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChallengeKey {
+  pub nonce: u64,
+  pub block_number: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChallengeProof {
+  pub block_data: Vec<u8>,
+  pub proof: Vec<[u8; 32]>,
+}

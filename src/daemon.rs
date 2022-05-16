@@ -25,7 +25,18 @@ pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error
 
   type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
 
-  let data = crate::data::new_service();
+  let cryptography = crate::cryptography::new_service();
+  let data = crate::data::new_service(
+    cryptography,
+    dirs::home_dir()
+      .map(|v| {
+        let mut new_path = v;
+        new_path.push(".p2pim");
+        new_path.push("datastore");
+        new_path
+      })
+      .expect("nno home dir found"),
+  );
   let private_key_raw = secp256k1_keypair.secret().to_bytes();
 
   let onchain = crate::onchain::new_service(onchain::OnchainParams {

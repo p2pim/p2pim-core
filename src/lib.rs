@@ -130,6 +130,7 @@ pub mod proto {
   }
 }
 
+pub mod cryptography;
 pub mod daemon;
 pub mod data;
 pub mod grpc;

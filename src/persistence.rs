@@ -32,6 +32,7 @@ pub trait Service: Clone + Sync + Send + 'static {
     chain_confirmation: Option<ChainConfirmation>,
   ) -> Result<(), UpdateError>;
   async fn rent_list(&self) -> Vec<Lease>;
+  async fn rent_get(&self, peer_id: PeerId, nonce: u64) -> Option<Lease>;
 }
 
 struct Implementation {
@@ -81,6 +82,11 @@ impl Service for Arc<Mutex<Implementation>> {
     let guard = self.lock().unwrap();
     // TODO should we clone here?
     guard.leases_rent.values().cloned().collect()
+  }
+
+  async fn rent_get(&self, peer_id: PeerId, nonce: u64) -> Option<Lease> {
+    let guard = self.lock().unwrap();
+    guard.leases_rent.get(&Key { peer_id, nonce }).cloned()
   }
 }
 

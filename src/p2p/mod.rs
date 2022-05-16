@@ -1,4 +1,4 @@
-use crate::types::{LeaseTerms, Signature};
+use crate::types::{ChallengeKey, ChallengeProof, LeaseTerms, Signature};
 use futures::Stream;
 use libp2p::core::Executor;
 use libp2p::identity::secp256k1::PublicKey;
@@ -21,6 +21,8 @@ pub mod transport;
 #[async_trait]
 pub trait Service: Stream<Item = behaviour::Event> + Send + Sync + Clone + Unpin + 'static {
   async fn send_proposal(&self, peer_id: PeerId, nonce: u64, terms: LeaseTerms, signature: Signature, data: Vec<u8>);
+  async fn send_challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey);
+  async fn send_challenge_proof(&self, peer_id: PeerId, challenge_key: ChallengeKey, challenge_proof: ChallengeProof);
   fn find_public_key(&self, peer_id: &PeerId) -> Option<secp256k1::PublicKey>;
   fn known_peers(&self) -> Vec<PeerId>;
 }
@@ -90,6 +92,19 @@ impl Service for Implementation {
         data,
       },
     )
+  }
+
+  async fn send_challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) {
+    let mut guard = self.0.lock().unwrap();
+    guard.behaviour_mut().p2pim.send_challenge(peer_id, challenge_key)
+  }
+
+  async fn send_challenge_proof(&self, peer_id: PeerId, challenge_key: ChallengeKey, challenge_proof: ChallengeProof) {
+    let mut guard = self.0.lock().unwrap();
+    guard
+      .behaviour_mut()
+      .p2pim
+      .send_challenge_proof(peer_id, challenge_key, challenge_proof);
   }
 
   fn find_public_key(&self, peer_id: &PeerId) -> Option<PublicKey> {
