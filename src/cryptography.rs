@@ -3,7 +3,7 @@ use rs_merkle::{Hasher, MerkleProof};
 use sha3::digest::{FixedOutput, FixedOutputReset};
 use sha3::{Digest, Keccak256};
 
-pub const BLOCK_SIZE_BYTES: usize = 512;
+pub const BLOCK_SIZE_BYTES: usize = 544;
 
 pub trait MerkleTree {
   fn append_data<T: AsRef<[u8]>>(&mut self, data: T);
@@ -36,16 +36,17 @@ impl Service for Implementation {
   }
 
   fn verify(leaf_index: usize, block_data: &[u8], proof: Vec<[u8; 32]>, merkle_root: [u8; 32], total_size: usize) -> bool {
-    let merkle_proof = MerkleProof::<Keccak256Hasher>::new(proof);
+    let merkle_proof = MerkleProof::<Keccak256Hasher>::new(proof.clone());
     let indexes = [leaf_index];
     let leaf_hashes = [Keccak256Hasher::hash(block_data)];
     let total_leaves_count = total_size / BLOCK_SIZE_BYTES + (if total_size % BLOCK_SIZE_BYTES == 0 { 0 } else { 1 });
 
     trace!(
-      "verifying proof merkle_root={} block_data={} leaf_hash={} total_leaves_count={}",
+      "verifying proof merkle_root={} proof={} leaf_hash={} block_data={} total_leaves_count={}",
       hex::encode(merkle_root),
-      hex::encode(block_data),
+      proof.iter().map(hex::encode).collect::<Vec<String>>().join(","),
       hex::encode(leaf_hashes[0]),
+      hex::encode(block_data),
       total_leaves_count
     );
     merkle_proof.verify(
@@ -79,25 +80,22 @@ impl Hasher for Keccak256Hasher {
 impl MerkleTree for RsMerkleTree {
   fn append_data<T: AsRef<[u8]>>(&mut self, data: T) {
     let remaining = BLOCK_SIZE_BYTES - self.current_bytes % BLOCK_SIZE_BYTES;
-    let len = data.as_ref().len();
 
-    trace!("Remaining bytes: {}, current len: {}", remaining, len);
-    if len < remaining {
-      self.digest.update(data.as_ref());
-      self.current_bytes += data.as_ref().len();
-    } else {
-      let (current, rest) = data.as_ref().split_at(remaining);
-      self.digest.update(current);
-      self.current_bytes += current.len();
+    let mut current = data.as_ref();
+    while !current.is_empty() {
+      let (left, right) = current.split_at(std::cmp::min(remaining, current.len()));
+      self.digest.update(left);
 
-      let output = self.digest.finalize_fixed_reset();
-      let mut result: [u8; 32] = Default::default();
-      result.copy_from_slice(output.as_slice());
+      if self.current_bytes % BLOCK_SIZE_BYTES == 0 {
+        let output = self.digest.finalize_fixed_reset();
+        let mut result: [u8; 32] = Default::default();
+        result.copy_from_slice(output.as_slice());
 
-      trace!("adding leaf data={} hash={}", hex::encode(current), hex::encode(result));
-      self.inner.insert(result);
-      self.inner.commit();
-      self.append_data(rest);
+        trace!("adding leaf hash={} remining_bytes={}", hex::encode(result), right.len());
+        self.inner.insert(result);
+      }
+
+      current = right;
     }
   }
 
