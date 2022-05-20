@@ -12,7 +12,18 @@ message ProtocolMessage {
     LeaseRejection lease_rejection = 2;
     ChallengeRequest challenge_request = 3;
     ChallengeResponse challenge_response = 4;
+    RetrieveRequest retrieve_request = 5;
+    RetrieveDelivery retrieve_delivery = 6;
   }
+}
+
+message RetrieveRequest {
+  uint64 nonce = 1;
+}
+
+message RetrieveDelivery {
+  uint64 nonce = 1;
+  bytes data = 1000;
 }
 
 message LeaseProposal {

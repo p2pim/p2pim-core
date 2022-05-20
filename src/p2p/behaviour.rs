@@ -44,6 +44,15 @@ pub enum Event {
     challenge_key: ChallengeKey,
     challenge_proof: ChallengeProof,
   },
+  ReceivedRetrieveRequest {
+    peer_id: PeerId,
+    nonce: u64,
+  },
+  ReceivedRetrieveDelivery {
+    peer_id: PeerId,
+    nonce: u64,
+    data: Vec<u8>,
+  },
 }
 
 #[derive(Debug)]
@@ -154,6 +163,12 @@ impl NetworkBehaviourEventProcess<p2pim::Event> for Behaviour {
           challenge_proof,
         })
       }
+      p2pim::Event::ReceivedRetrieveRequest(peer_id, nonce) => {
+        self.events_queue.push_back(Event::ReceivedRetrieveRequest { peer_id, nonce })
+      }
+      p2pim::Event::ReceivedRetrieveDelivery(peer_id, nonce, data) => self
+        .events_queue
+        .push_back(Event::ReceivedRetrieveDelivery { peer_id, nonce, data }),
     }
   }
 }

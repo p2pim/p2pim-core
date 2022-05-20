@@ -10,6 +10,7 @@ use tonic::async_trait;
 pub trait Service: Send + Sync + Unpin + Clone + 'static {
   async fn parameters(&self, data: &[u8]) -> DataParameters;
   async fn store(&self, peer_id: PeerId, nonce: u64, data: &[u8]) -> anyhow::Result<DataParameters>;
+  async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>>;
   async fn proof(&self, peer_id: PeerId, nonce: u64, block_number: usize) -> anyhow::Result<(Vec<u8>, Vec<[u8; 32]>)>;
   async fn verify(&self, params: DataParameters, block_number: u32, block_data: &[u8], proof: Vec<[u8; 32]>) -> bool;
 }
@@ -30,6 +31,18 @@ where
   Implementation {
     _cryptography: cryptography,
     data_folder,
+  }
+}
+
+impl<TCryptography> Implementation<TCryptography>
+where
+  TCryptography: cryptography::Service,
+{
+  fn path(&self, peer_id: PeerId, nonce: u64) -> PathBuf {
+    let mut peer_id_path = self.data_folder.clone();
+    peer_id_path.push(peer_id.to_base58());
+    peer_id_path.push(nonce.to_string());
+    peer_id_path
   }
 }
 
@@ -62,14 +75,20 @@ where
     Ok(parameters)
   }
 
-  async fn proof(&self, peer_id: PeerId, nonce: u64, block_number: usize) -> anyhow::Result<(Vec<u8>, Vec<[u8; 32]>)> {
-    let mut peer_id_path = self.data_folder.clone();
-    peer_id_path.push(peer_id.to_base58());
-    peer_id_path.push(nonce.to_string());
+  async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>> {
+    let path = self.path(peer_id, nonce);
 
-    let data: Vec<u8> = tokio::fs::read(peer_id_path.clone())
+    let data: Vec<u8> = tokio::fs::read(path.clone())
       .await
-      .with_context(|| format!("Failed to read file while creating proof file={:?}", peer_id_path))?;
+      .with_context(|| format!("Failed to read file file={:?}", path))?;
+    Ok(data)
+  }
+
+  async fn proof(&self, peer_id: PeerId, nonce: u64, block_number: usize) -> anyhow::Result<(Vec<u8>, Vec<[u8; 32]>)> {
+    let data = self
+      .retrieve(peer_id, nonce)
+      .await
+      .with_context(|| "Error calculating proof")?;
 
     let block_start: usize = (block_number as usize) * cryptography::BLOCK_SIZE_BYTES;
     ensure!(data.len() >= block_start, "block is out of bounds");

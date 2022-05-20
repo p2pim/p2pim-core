@@ -1,20 +1,18 @@
-use crate::p2p::behaviour::Event;
 use crate::p2p::p2pim::LeaseProposal;
+use crate::p2p::Event;
 use crate::types::{ChainConfirmation, ChallengeKey, ChallengeProof, Lease, LeaseTerms};
 use crate::utils::ethereum::IntoAddress;
 use crate::{cryptography, data, onchain, p2p, persistence};
+use anyhow::anyhow;
 use ethcontract::transaction::TransactionResult;
 use ethcontract::{EventMetadata, EventStatus};
 use futures::future::join_all;
 use futures::{FutureExt, StreamExt};
 use libp2p::PeerId;
 use log::{error, info, trace, warn};
-use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
-use std::hash::Hash;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tonic::async_trait;
 use web3::types::{BlockId, H256};
@@ -23,6 +21,7 @@ use web3::types::{BlockId, H256};
 pub trait Service: Clone + Send + Sync + 'static {
   async fn lease(&self, peer_id: PeerId, terms: LeaseTerms, data: Vec<u8>) -> Result<H256, Box<dyn Error>>;
   async fn challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> Result<(), Box<dyn Error>>;
+  async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>>;
 }
 
 #[derive(Clone)]
@@ -37,34 +36,6 @@ where
   onchain: TOnchain,
   p2p: TP2p,
   persistence: TPersistence,
-  pending_challenges: Arc<Mutex<OneshotListerners<(PeerId, ChallengeKey), ChallengeProof>>>,
-}
-
-struct OneshotListerners<K: Hash + Eq, V: Clone> {
-  inner: HashMap<K, Vec<futures::channel::oneshot::Sender<V>>>,
-}
-
-impl<K: Hash + Eq, V: Clone> OneshotListerners<K, V> {
-  fn new() -> Self {
-    OneshotListerners { inner: HashMap::new() }
-  }
-
-  fn new_listener(&mut self, key: K) -> impl Future<Output = V> {
-    let (sender, receiver) = futures::channel::oneshot::channel();
-    self.inner.entry(key).or_default().push(sender);
-    receiver.map(|r| r.expect("we never cancel the sender"))
-  }
-
-  fn notify(&mut self, key: K, value: V) -> usize {
-    let senders = self.inner.remove(&key).unwrap_or_else(Vec::new);
-    let res = senders.len();
-    senders.into_iter().for_each(|sender| {
-      if sender.send(value.clone()).is_err() {
-        error!("TODO receiver has been dropped, this should not happen");
-      }
-    });
-    res
-  }
 }
 
 pub fn new_service<TData, TOnchain, TP2p, TPersistence>(
@@ -84,7 +55,6 @@ where
     onchain,
     p2p,
     persistence,
-    pending_challenges: Arc::new(Mutex::new(OneshotListerners::new())),
   };
 
   type ReactorFuture = Pin<Box<dyn Future<Output = ()>>>;
@@ -102,26 +72,8 @@ where
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
 {
-  fn add_challenge_listener(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> impl Future<Output = ChallengeProof> {
-    self.pending_challenges.lock().unwrap().new_listener((peer_id, challenge_key))
-  }
-
-  fn notify_challenge_listeners(
-    &self,
-    peer_id: PeerId,
-    challenge_key: ChallengeKey,
-    challenge_proof: ChallengeProof,
-  ) -> usize {
-    self
-      .pending_challenges
-      .lock()
-      .unwrap()
-      .notify((peer_id, challenge_key), challenge_proof)
-  }
-
   async fn process_p2p_events(mut self) {
     while let Some(ev) = self.p2p.next().await {
-      trace!("p2p: {:?}", ev);
       match ev {
         Event::ReceivedLeaseProposal { peer_id, proposal } => {
           let self_clone = self.clone();
@@ -132,25 +84,21 @@ where
             }
           });
         }
-        Event::ReceivedChallengeResponse {
-          peer_id,
-          challenge_key,
-          challenge_proof,
-        } => {
-          let count = self.notify_challenge_listeners(peer_id, challenge_key.clone(), challenge_proof);
-          if count == 0 {
-            warn!(
-              "received a proof not expected peer_id={} nonce={} block_number={}",
-              peer_id, challenge_key.nonce, challenge_key.block_number
-            );
-          }
-        }
         Event::ReceivedChallengeRequest { peer_id, challenge_key } => {
           let self_clone = self.clone();
           tokio::task::spawn(async move {
             let result = self_clone.send_proof(peer_id, challenge_key).await;
             if let Err(e) = result {
               error!("TODO (Handling): error while trying to send proof: {:?}", e);
+            }
+          });
+        }
+        Event::ReceivedRetrieveRequest { peer_id, nonce } => {
+          let self_clone = self.clone();
+          tokio::task::spawn(async move {
+            let result = self_clone.send_retrieve_delivery(peer_id, nonce).await;
+            if let Err(e) = result {
+              error!("TODO (Handling): error while trying to send data: {:?}", e);
             }
           });
         }
@@ -214,6 +162,13 @@ where
       .p2p
       .send_challenge_proof(peer_id, challenge_key, ChallengeProof { block_data, proof })
       .await;
+    Ok(())
+  }
+
+  async fn send_retrieve_delivery(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<()> {
+    let data = self.data.retrieve(peer_id, nonce).await?;
+    self.p2p.send_retrieve_delivery(peer_id, nonce, data).await;
+
     Ok(())
   }
 
@@ -318,11 +273,8 @@ where
       return Err("block number is out of bounds".into());
     }
 
-    let receiver = self.add_challenge_listener(peer_id, challenge_key.clone());
-    self.p2p.send_challenge(peer_id, challenge_key.clone()).await;
-
     // TODO timeout
-    let challenge_proof = receiver.await;
+    let challenge_proof = self.p2p.challenge(peer_id, challenge_key.clone()).await?;
     trace!("proof received peer={}", peer_id);
 
     let valid = self
@@ -338,6 +290,27 @@ where
       Ok(())
     } else {
       Err("proof not valid".into())
+    }
+  }
+
+  async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>> {
+    let lease = self
+      .persistence
+      .rent_get(peer_id, nonce)
+      .await
+      .ok_or_else(|| anyhow!("lease not found"))?;
+    let data = self.p2p.retrieve(peer_id, nonce).await?;
+    let parameters = self.data.parameters(data.as_slice()).await;
+    if parameters.size != lease.data_parameters.size {
+      Err(anyhow!(
+        "unexpected data size, expected={}, received={}",
+        lease.data_parameters.size,
+        parameters.size
+      ))
+    } else if parameters.merkle_root != lease.data_parameters.merkle_root {
+      Err(anyhow!("received data does not match with the merkle root"))
+    } else {
+      Ok(data)
     }
   }
 }

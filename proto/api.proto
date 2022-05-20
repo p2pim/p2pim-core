@@ -12,6 +12,7 @@ service P2pim {
   rpc Deposit (DepositRequest) returns (DepositResponse);
   rpc Withdraw (WithdrawRequest) returns (WithdrawResponse);
   rpc Store (StoreRequest) returns (StoreResponse);
+  rpc Retrieve (RetrieveRequest) returns (RetrieveResponse);
   rpc Challenge (ChallengeRequest) returns (ChallengeResponse);
   rpc ListStorageRented (ListStorageRentedRequest) returns (ListStorageRentedResponse);
   // rpc ListStorageLet (ListSotorageLetRequest) returns (ListStorageLetResponse);
@@ -49,6 +50,15 @@ message ListStorageRentedResponse {
     google.protobuf.Timestamp lease_started = 9;
   }
   repeated StorageRentedData storage_rented_data = 1;
+}
+
+message RetrieveRequest {
+  libp2p.PeerId peer_id = 1;
+  uint64 nonce = 2;
+}
+
+message RetrieveResponse {
+  bytes data = 1;
 }
 
 message StoreRequest {

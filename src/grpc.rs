@@ -11,8 +11,8 @@ use crate::proto::api::swarm_server::{Swarm, SwarmServer};
 use crate::proto::api::{
   ApproveRequest, ApproveResponse, BalanceEntry, ChallengeRequest, ChallengeResponse, DepositRequest, DepositResponse,
   GetBalanceRequest, GetBalanceResponse, GetConnectedPeersRequest, GetConnectedPeersResponse, GetInfoRequest,
-  GetInfoResponse, ListStorageRentedRequest, ListStorageRentedResponse, StoreRequest, StoreResponse, WithdrawRequest,
-  WithdrawResponse,
+  GetInfoResponse, ListStorageRentedRequest, ListStorageRentedResponse, RetrieveRequest, RetrieveResponse, StoreRequest,
+  StoreResponse, WithdrawRequest, WithdrawResponse,
 };
 use crate::proto::libp2p::PeerId;
 use crate::types::{Balance, ChallengeKey, LeaseTerms};
@@ -210,6 +210,23 @@ where
     Ok(Response::new(StoreResponse {
       transaction_hash: Some(result.into()),
     }))
+  }
+
+  async fn retrieve(&self, request: Request<RetrieveRequest>) -> Result<Response<RetrieveResponse>, Status> {
+    let req = request.get_ref();
+    let peer_id = req
+      .peer_id
+      .as_ref()
+      .ok_or(Status::invalid_argument("peer empty"))?
+      .try_into()
+      .map_err(|e| Status::invalid_argument(format!("invalid peer id: {}", e)))?;
+    let nonce = req.nonce;
+    let data = self
+      .reactor
+      .retrieve(peer_id, nonce)
+      .await
+      .map_err(|e| Status::unknown(format!("error retrieving the data: {}", e)))?;
+    Ok(Response::new(RetrieveResponse { data }))
   }
 
   async fn challenge(&self, request: Request<ChallengeRequest>) -> Result<Response<ChallengeResponse>, Status> {

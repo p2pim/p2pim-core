@@ -2,7 +2,7 @@ use crate::libp2p::protobuf;
 use crate::libp2p::protobuf::handler;
 use crate::proto;
 use crate::proto::p2p::protocol_message::Message;
-use crate::proto::p2p::{protocol_message, ChallengeRequest, ChallengeResponse};
+use crate::proto::p2p::{protocol_message, ChallengeRequest, ChallengeResponse, RetrieveDelivery, RetrieveRequest};
 use crate::types::{ChallengeKey, ChallengeProof, LeaseTerms, Signature};
 use libp2p::core::connection::ConnectionId;
 use libp2p::core::ConnectedPoint;
@@ -10,7 +10,7 @@ use libp2p::swarm::{
   ConnectionHandler, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
 use libp2p::{Multiaddr, PeerId};
-use log::warn;
+use log::{trace, warn};
 use std::collections::VecDeque;
 use std::convert::{TryFrom, TryInto};
 use std::task::{Context, Poll, Waker};
@@ -70,6 +70,20 @@ impl Behaviour {
     self.wake()
   }
 
+  pub fn send_retrieve_request(&mut self, peer_id: PeerId, nonce: u64) {
+    self
+      .message_queue
+      .push_back((peer_id, Message::RetrieveRequest(RetrieveRequest { nonce })));
+    self.wake()
+  }
+
+  pub fn send_retrieve_delivery(&mut self, peer_id: PeerId, nonce: u64, data: Vec<u8>) {
+    self
+      .message_queue
+      .push_back((peer_id, Message::RetrieveDelivery(RetrieveDelivery { nonce, data })));
+    self.wake()
+  }
+
   fn wake(&mut self) {
     if let Some(waker) = self.waker.take() {
       waker.wake();
@@ -80,9 +94,10 @@ impl Behaviour {
 #[derive(Debug)]
 pub enum Event {
   ReceivedLeaseProposal(PeerId, LeaseProposal),
-  // TODO make u64 + u32 a type `challenge`
   ReceivedChallengeRequest(PeerId, ChallengeKey),
   ReceivedChallengeResponse(PeerId, ChallengeKey, ChallengeProof),
+  ReceivedRetrieveRequest(PeerId, u64),
+  ReceivedRetrieveDelivery(PeerId, u64, Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -207,6 +222,14 @@ impl NetworkBehaviour for Behaviour {
           }
         }
         Some(Message::LeaseRejection(_)) => todo!("handle lease rejection"),
+        Some(Message::RetrieveRequest(retrieve_request)) => self
+          .event_queue
+          .push_back(Event::ReceivedRetrieveRequest(peer_id, retrieve_request.nonce)),
+        Some(Message::RetrieveDelivery(retrieve_delivery)) => self.event_queue.push_back(Event::ReceivedRetrieveDelivery(
+          peer_id,
+          retrieve_delivery.nonce,
+          retrieve_delivery.data,
+        )),
         None => warn!("invalid message received from peer {}: no inner message", peer_id),
       },
     };
