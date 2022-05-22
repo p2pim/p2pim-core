@@ -10,7 +10,7 @@ use libp2p::swarm::{
   ConnectionHandler, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
 use libp2p::{Multiaddr, PeerId};
-use log::{trace, warn};
+use log::warn;
 use std::collections::VecDeque;
 use std::convert::{TryFrom, TryInto};
 use std::task::{Context, Poll, Waker};

@@ -10,7 +10,7 @@ const ARG_PEER_ID: &str = "peer";
 const ARG_NONCE: &str = "nonce";
 const ARG_BLOCK_NUMBER: &str = "block.number";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(CMD_NAME)
     .about("challenge lease to peer")
     .arg(arg_url())
@@ -19,7 +19,7 @@ pub fn command() -> Command<'static> {
     .arg(arg_block())
 }
 
-fn arg_nonce() -> Arg<'static> {
+fn arg_nonce<'a>() -> Arg<'a> {
   Arg::new(ARG_NONCE)
     .takes_value(true)
     .required(true)
@@ -27,14 +27,14 @@ fn arg_nonce() -> Arg<'static> {
     .help("nonce to challenge")
 }
 
-fn arg_peer_id() -> Arg<'static> {
+fn arg_peer_id<'a>() -> Arg<'a> {
   Arg::new(ARG_PEER_ID)
     .takes_value(true)
     .required(true)
     .help("peer of the lease")
 }
 
-fn arg_block() -> Arg<'static> {
+fn arg_block<'a>() -> Arg<'a> {
   Arg::new(ARG_BLOCK_NUMBER)
     .takes_value(true)
     .required(true)

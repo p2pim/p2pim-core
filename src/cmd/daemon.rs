@@ -2,8 +2,11 @@ use std::str::FromStr;
 
 use clap::{Arg, ArgMatches, Command};
 use p2pim::daemon::DaemonOpts;
+use typed_arena::Arena;
 
-const ARG_ETH_ADDRESS: &str = "eth.address";
+pub const CMD_NAME: &str = "daemon";
+
+const ARG_ETH_URL: &str = "eth.url";
 const ARG_ETH_MASTER: &str = "eth.master";
 
 const ARG_RPC_ADDRESS: &str = "rpc.address";
@@ -14,16 +17,20 @@ const ARG_S3: &str = "s3";
 const ARG_S3_ADDRESS: &str = "s3.address";
 const ARG_S3_ADDRESS_DEFAULT: &str = "127.0.0.1:8123";
 
-fn arg_eth_address() -> Arg<'static> {
-  Arg::new(ARG_ETH_ADDRESS)
-    .long(ARG_ETH_ADDRESS)
+fn arg_eth_url(buf: &mut Arena<String>) -> Arg {
+  let default_value = buf.alloc(format!(
+    "file://{}/.ethereum/geth.ipc",
+    dirs::home_dir().expect("TODO").to_str().expect("TODO")
+  ));
+  Arg::new(ARG_ETH_URL)
+    .long(ARG_ETH_URL)
     .takes_value(true)
     .value_name("ADDRESS")
-    .required(true)
+    .default_value(default_value)
     .help("ethereum JSON-RPC address")
 }
 
-fn arg_eth_master() -> Arg<'static> {
+fn arg_eth_master<'a>() -> Arg<'a> {
   Arg::new(ARG_ETH_MASTER)
     .long(ARG_ETH_MASTER)
     .takes_value(true)
@@ -33,7 +40,7 @@ fn arg_eth_master() -> Arg<'static> {
     .help("ethereum address of the master record contract")
 }
 
-fn arg_rpc_address() -> Arg<'static> {
+fn arg_rpc_address<'a>() -> Arg<'a> {
   Arg::new(ARG_RPC_ADDRESS)
     .long(ARG_RPC_ADDRESS)
     .takes_value(true)
@@ -42,7 +49,7 @@ fn arg_rpc_address() -> Arg<'static> {
     .help("gRPC server listening address")
 }
 
-fn arg_s3() -> Arg<'static> {
+fn arg_s3<'a>() -> Arg<'a> {
   Arg::new(ARG_S3)
     .long(ARG_S3)
     .required(false)
@@ -50,7 +57,7 @@ fn arg_s3() -> Arg<'static> {
     .help("Enable the S3 compatible server")
 }
 
-fn arg_s3_address() -> Arg<'static> {
+fn arg_s3_address<'a>() -> Arg<'a> {
   Arg::new(ARG_S3_ADDRESS)
     .long(ARG_S3_ADDRESS)
     .takes_value(true)
@@ -59,10 +66,10 @@ fn arg_s3_address() -> Arg<'static> {
     .help("s3 server listening address")
 }
 
-pub fn command() -> Command<'static> {
+pub fn command(buf: &mut Arena<String>) -> Command {
   Command::new("daemon")
     .about("run daemon")
-    .arg(arg_eth_address())
+    .arg(arg_eth_url(buf))
     .arg(arg_eth_master())
     .arg(arg_rpc_address())
     .arg(arg_s3())
@@ -71,7 +78,7 @@ pub fn command() -> Command<'static> {
 
 pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
   let daemon_opts = DaemonOpts {
-    eth_addr: matches.value_of_t(ARG_ETH_ADDRESS)?,
+    eth_addr: matches.value_of_t(ARG_ETH_URL)?,
     rpc_addr: matches.value_of_t(ARG_RPC_ADDRESS)?,
     master_addr: matches
       .value_of(ARG_ETH_MASTER)

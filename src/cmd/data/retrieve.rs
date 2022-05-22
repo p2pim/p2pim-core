@@ -10,7 +10,7 @@ pub const CMD_NAME: &str = "retrieve";
 const ARG_PEER_ID: &str = "peer";
 const ARG_NONCE: &str = "nonce";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(CMD_NAME)
     .about("retrieve data from peer")
     .arg(arg_url())
@@ -18,7 +18,7 @@ pub fn command() -> Command<'static> {
     .arg(arg_nonce())
 }
 
-fn arg_nonce() -> Arg<'static> {
+fn arg_nonce<'a>() -> Arg<'a> {
   Arg::new(ARG_NONCE)
     .takes_value(true)
     .required(true)
@@ -26,7 +26,7 @@ fn arg_nonce() -> Arg<'static> {
     .help("nonce to challenge")
 }
 
-fn arg_peer_id() -> Arg<'static> {
+fn arg_peer_id<'a>() -> Arg<'a> {
   Arg::new(ARG_PEER_ID)
     .takes_value(true)
     .required(true)

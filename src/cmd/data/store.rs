@@ -18,7 +18,7 @@ const ARG_PEER_ID: &str = "peer";
 const ARG_PENALTY: &str = "penalty";
 const ARG_PRICE: &str = "price";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(STORE_CMD)
     .about("store data in a peer")
     .arg(arg_url())
@@ -30,11 +30,11 @@ pub fn command() -> Command<'static> {
     .arg(arg_data_file())
 }
 
-fn arg_data_file() -> Arg<'static> {
+fn arg_data_file<'a>() -> Arg<'a> {
   Arg::new(ARG_DATA_FILE).takes_value(true).required(true).help("file to store")
 }
 
-fn arg_duration() -> Arg<'static> {
+fn arg_duration<'a>() -> Arg<'a> {
   Arg::new(ARG_DURATION)
     .long(ARG_DURATION)
     .takes_value(true)
@@ -43,7 +43,7 @@ fn arg_duration() -> Arg<'static> {
     .help("duration of the lease")
 }
 
-fn arg_peer_id() -> Arg<'static> {
+fn arg_peer_id<'a>() -> Arg<'a> {
   Arg::new(ARG_PEER_ID)
     .long(ARG_PEER_ID)
     .takes_value(true)
@@ -51,7 +51,7 @@ fn arg_peer_id() -> Arg<'static> {
     .help("peer where store the data")
 }
 
-fn arg_penalty() -> Arg<'static> {
+fn arg_penalty<'a>() -> Arg<'a> {
   Arg::new(ARG_PENALTY)
     .long(ARG_PENALTY)
     .takes_value(true)
@@ -60,7 +60,7 @@ fn arg_penalty() -> Arg<'static> {
     .help("penalty applied to the lessor in case storage lost")
 }
 
-fn arg_price() -> Arg<'static> {
+fn arg_price<'a>() -> Arg<'a> {
   Arg::new(ARG_PRICE)
     .long(ARG_PRICE)
     .takes_value(true)

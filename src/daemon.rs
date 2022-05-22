@@ -35,7 +35,7 @@ pub async fn listen_and_serve(opts: DaemonOpts) -> Result<(), Box<dyn std::error
         new_path.push("datastore");
         new_path
       })
-      .expect("nno home dir found"),
+      .expect("no home dir found"),
   );
   let private_key_raw = secp256k1_keypair.secret().to_bytes();
 

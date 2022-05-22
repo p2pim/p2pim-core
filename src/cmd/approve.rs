@@ -5,7 +5,7 @@ use p2pim::proto::api::p2pim_client::P2pimClient;
 use p2pim::proto::api::ApproveRequest;
 use web3::types::H256;
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new("approve")
     .about("approve to use tokens by the adjudicator")
     .arg(arg_url())

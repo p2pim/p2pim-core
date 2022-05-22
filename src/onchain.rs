@@ -26,8 +26,8 @@ use web3::types::{Address, Block, BlockId, H256, U256};
 
 #[derive(Clone)]
 pub struct OnchainParams {
-  // TODO Review this as could be dangerous to keep this in memory
   pub eth_url: Url,
+  // TODO Review this as could be dangerous to keep this in memory
   pub private_key: [u8; 32],
   pub master_address: Option<Address>,
 }
@@ -127,7 +127,7 @@ pub async fn new_service(params: OnchainParams) -> Result<impl Service, Box<dyn 
 
   debug!("creating transport using {}", params.eth_url);
   let transport = match params.eth_url.scheme() {
-    "unix" => Ok(Either::Right(web3::transports::ipc::Ipc::new(params.eth_url.path()).await?)),
+    "file" => Ok(Either::Right(web3::transports::ipc::Ipc::new(params.eth_url.path()).await?)),
     "ws" | "wss" => Ok(Either::Left(
       web3::transports::ws::WebSocket::new(params.eth_url.as_str()).await?,
     )),

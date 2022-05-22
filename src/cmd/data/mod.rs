@@ -7,7 +7,7 @@ pub mod store;
 
 pub const DATA_CMD: &str = "data";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(DATA_CMD)
     .about("data related commands")
     .subcommand_required(true)

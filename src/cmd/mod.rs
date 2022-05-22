@@ -12,7 +12,7 @@ pub mod withdraw;
 const ARG_URL: &str = "url";
 const ARG_URL_DEFAULT: &str = "http://127.0.0.1:8122";
 
-fn arg_url() -> Arg<'static> {
+fn arg_url<'a>() -> Arg<'a> {
   Arg::new(ARG_URL)
     .long(ARG_URL)
     .takes_value(true)
@@ -23,7 +23,7 @@ fn arg_url() -> Arg<'static> {
 
 const ARG_TOKEN: &str = "token";
 
-fn arg_token() -> Arg<'static> {
+fn arg_token<'a>() -> Arg<'a> {
   Arg::new(ARG_TOKEN)
     .takes_value(true)
     .required(true)
@@ -33,7 +33,7 @@ fn arg_token() -> Arg<'static> {
 
 const ARG_AMOUNT: &str = "amount";
 
-fn arg_amount() -> Arg<'static> {
+fn arg_amount<'a>() -> Arg<'a> {
   Arg::new(ARG_AMOUNT)
     .takes_value(true)
     .required(true)

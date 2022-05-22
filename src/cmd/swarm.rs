@@ -6,7 +6,7 @@ use p2pim::proto::api::GetConnectedPeersRequest;
 
 const CMD_PEERS: &str = "peers";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new("swarm")
     .about("swarm related commands")
     .subcommand_required(true)
@@ -14,7 +14,7 @@ pub fn command() -> Command<'static> {
     .subcommand(command_peers())
 }
 
-fn command_peers() -> Command<'static> {
+fn command_peers<'a>() -> Command<'a> {
   Command::new(CMD_PEERS).about("lists connected peers").arg(arg_url())
 }
 

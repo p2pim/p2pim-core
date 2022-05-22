@@ -7,7 +7,7 @@ use clap::{ArgMatches, Command};
 use p2pim::proto::api::p2pim_client::P2pimClient;
 use p2pim::proto::api::{BalanceEntry, GetInfoRequest};
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new("info").about("show p2pim account info").arg(arg_url())
 }
 

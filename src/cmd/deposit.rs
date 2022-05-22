@@ -7,7 +7,7 @@ use p2pim::proto::api::{DepositRequest, GetBalanceRequest};
 use std::convert::TryInto;
 use web3::types::H256;
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new("deposit")
     .about("deposits tokens into adjudicator")
     .arg(arg_url())

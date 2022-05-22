@@ -7,7 +7,7 @@ use std::convert::TryFrom;
 
 pub const LIST_CMD: &str = "list";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(LIST_CMD).about("list rented storage").arg(arg_url())
 }
 

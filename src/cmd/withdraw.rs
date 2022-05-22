@@ -9,7 +9,7 @@ use web3::types::H256;
 
 pub const CMD_NAME: &str = "withdraw";
 
-pub fn command() -> Command<'static> {
+pub fn command<'a>() -> Command<'a> {
   Command::new(CMD_NAME)
     .about("withdraw tokens from adjudicator")
     .arg(arg_url())
