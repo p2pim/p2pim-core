@@ -4,6 +4,7 @@ use crate::types::{ChallengeKey, ChallengeProof};
 use libp2p::identify::{Identify, IdentifyConfig, IdentifyEvent, IdentifyInfo};
 use libp2p::identity::PublicKey;
 use libp2p::mdns::{Mdns, MdnsConfig, MdnsEvent};
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{NetworkBehaviour, NetworkBehaviourAction, NetworkBehaviourEventProcess};
 use libp2p::{ping, NetworkBehaviour, PeerId};
@@ -19,7 +20,7 @@ const PROTOCOL_VERSION: &str = "p2pim/0.1.0";
 pub struct Behaviour {
   identify: Identify,
   ping: ping::Behaviour,
-  mdns: Mdns,
+  mdns: Toggle<Mdns>,
   pub p2pim: p2pim::Behaviour,
   #[behaviour(ignore)]
   actions: VecDeque<BehaviourAction>,
@@ -66,12 +67,16 @@ enum BehaviourAction {
 }
 
 impl Behaviour {
-  pub async fn new(local_public_key: PublicKey) -> Result<Self, Box<dyn Error>> {
+  pub async fn new(local_public_key: PublicKey, mdns_enabled: bool) -> Result<Self, Box<dyn Error>> {
     let identify = Identify::new(
       IdentifyConfig::new(PROTOCOL_VERSION.to_string(), local_public_key).with_agent_version("p2pim-core".to_string()),
     );
     let ping = ping::Behaviour::new(ping::Config::new().with_keep_alive(true)); // TODO This is temporary until we maintain the connection in p2pim
-    let mdns = Mdns::new(MdnsConfig::default()).await?;
+    let mdns = if mdns_enabled {
+      Toggle::from(Some(Mdns::new(MdnsConfig::default()).await?))
+    } else {
+      Toggle::from(None)
+    };
     let p2pim = p2pim::Behaviour::new();
     Ok(Behaviour {
       identify,

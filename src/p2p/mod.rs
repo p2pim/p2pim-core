@@ -54,9 +54,9 @@ impl Executor for TokioExecutor {
   }
 }
 
-pub async fn create_p2p(keypair: Keypair) -> Result<impl Service, Box<dyn Error>> {
+pub async fn create_p2p(keypair: Keypair, mdns_enabled: bool) -> Result<impl Service, Box<dyn Error>> {
   let transport = transport::build_transport(keypair.clone())?;
-  let behaviour = behaviour::Behaviour::new(keypair.public()).await?;
+  let behaviour = behaviour::Behaviour::new(keypair.public(), mdns_enabled).await?;
   let local_peer_id = PeerId::from_public_key(keypair.public().borrow());
   let mut swarm = SwarmBuilder::new(transport, behaviour, local_peer_id)
     .executor(Box::new(TokioExecutor {}))

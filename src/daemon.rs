@@ -20,8 +20,9 @@ use web3::types::{Address, U256};
 pub struct DaemonOpts {
   pub rpc_addr: SocketAddr,
   pub eth_opts: EthOpts,
-  pub s3_opts: S3Opts,
   pub lessor_opts: LessorOpts,
+  pub mdns_opts: MdnsOpts,
+  pub s3_opts: S3Opts,
 }
 
 pub struct LessorOpts {
@@ -46,12 +47,16 @@ pub struct S3Opts {
   pub s3_addr: SocketAddr,
 }
 
+pub struct MdnsOpts {
+  pub enabled: bool,
+}
+
 pub async fn listen_and_serve(opts: &DaemonOpts) -> Result<(), Box<dyn std::error::Error>> {
   info!("initializing p2pim");
 
   let secp256k1_keypair = secp256k1::Keypair::generate();
   let keypair = Keypair::Secp256k1(secp256k1_keypair.clone());
-  let p2p = p2p::create_p2p(keypair).await?;
+  let p2p = p2p::create_p2p(keypair, opts.mdns_opts.enabled).await?;
 
   type ServeFuture = Pin<Box<dyn Future<Output = Result<(), Box<dyn Error>>>>>;
 

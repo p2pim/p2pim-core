@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::str::FromStr;
 
 use clap::{Arg, ArgMatches, Command};
-use p2pim::daemon::{DaemonOpts, EthOpts, LessorOpts, S3Opts, TokenLeaseAsk};
+use p2pim::daemon::{DaemonOpts, EthOpts, LessorOpts, MdnsOpts, S3Opts, TokenLeaseAsk};
 use typed_arena::Arena;
 
 pub const CMD_NAME: &str = "daemon";
@@ -16,6 +16,8 @@ const ARG_RPC_ADDRESS: &str = "rpc.address";
 const ARG_RPC_ADDRESS_DEFAULT: &str = "127.0.0.1:8122";
 
 const ARG_LESSOR_ASK: &str = "lessor.ask";
+
+const ARG_MDNS: &str = "mdns";
 
 const ARG_S3: &str = "s3";
 
@@ -62,6 +64,14 @@ fn arg_s3<'a>() -> Arg<'a> {
     .help("Enable the S3 compatible server")
 }
 
+fn arg_mdns<'a>() -> Arg<'a> {
+  Arg::new(ARG_MDNS)
+    .long(ARG_MDNS)
+    .required(false)
+    .takes_value(false)
+    .help("Enable bootstraping using mdns")
+}
+
 fn arg_s3_address<'a>() -> Arg<'a> {
   Arg::new(ARG_S3_ADDRESS)
     .long(ARG_S3_ADDRESS)
@@ -89,6 +99,7 @@ pub fn command(buf: &mut Arena<String>) -> Command {
     .arg(arg_s3())
     .arg(arg_s3_address())
     .arg(arg_lessor_ask())
+    .arg(arg_mdns())
 }
 
 pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
@@ -101,10 +112,6 @@ pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?,
       url: matches.value_of_t(ARG_ETH_URL)?,
     },
-    s3_opts: S3Opts {
-      enabled: matches.is_present(ARG_S3),
-      s3_addr: matches.value_of_t(ARG_S3_ADDRESS)?,
-    },
     lessor_opts: LessorOpts {
       token_lease_terms: matches
         .values_of(ARG_LESSOR_ASK)
@@ -114,6 +121,13 @@ pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Result<HashMap<web3::types::Address, TokenLeaseAsk>, Box<dyn std::error::Error>>>()
         })
         .unwrap_or_else(|| Ok(Default::default()))?,
+    },
+    mdns_opts: MdnsOpts {
+      enabled: matches.is_present(ARG_MDNS),
+    },
+    s3_opts: S3Opts {
+      enabled: matches.is_present(ARG_S3),
+      s3_addr: matches.value_of_t(ARG_S3_ADDRESS)?,
     },
   };
   tokio::runtime::Builder::new_multi_thread()
