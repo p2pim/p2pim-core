@@ -1,7 +1,10 @@
+use bigdecimal::BigDecimal;
+use std::collections::HashMap;
+use std::ops::Range;
 use std::str::FromStr;
 
 use clap::{Arg, ArgMatches, Command};
-use p2pim::daemon::DaemonOpts;
+use p2pim::daemon::{DaemonOpts, EthOpts, LessorOpts, S3Opts, TokenLeaseAsk};
 use typed_arena::Arena;
 
 pub const CMD_NAME: &str = "daemon";
@@ -11,6 +14,8 @@ const ARG_ETH_MASTER: &str = "eth.master";
 
 const ARG_RPC_ADDRESS: &str = "rpc.address";
 const ARG_RPC_ADDRESS_DEFAULT: &str = "127.0.0.1:8122";
+
+const ARG_LESSOR_ASK: &str = "lessor.ask";
 
 const ARG_S3: &str = "s3";
 
@@ -66,6 +71,15 @@ fn arg_s3_address<'a>() -> Arg<'a> {
     .help("s3 server listening address")
 }
 
+fn arg_lessor_ask<'a>() -> Arg<'a> {
+  Arg::new(ARG_LESSOR_ASK)
+    .long(ARG_LESSOR_ASK)
+    .takes_value(true)
+    .value_name("TERMS")
+    .multiple_occurrences(true)
+    .help("lease ask in form TOKEN:min_duration:max_duration:min_size:max_size:min_tokens_total:min_tokens_gb_hour:max_penalty_rate")
+}
+
 pub fn command(buf: &mut Arena<String>) -> Command {
   Command::new("daemon")
     .about("run daemon")
@@ -74,25 +88,93 @@ pub fn command(buf: &mut Arena<String>) -> Command {
     .arg(arg_rpc_address())
     .arg(arg_s3())
     .arg(arg_s3_address())
+    .arg(arg_lessor_ask())
 }
 
 pub fn run(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
   let daemon_opts = DaemonOpts {
-    eth_addr: matches.value_of_t(ARG_ETH_URL)?,
     rpc_addr: matches.value_of_t(ARG_RPC_ADDRESS)?,
-    master_addr: matches
-      .value_of(ARG_ETH_MASTER)
-      .map(web3::types::Address::from_str)
-      .transpose()?,
-    s3_addr: if matches.is_present(ARG_S3) {
-      Some(matches.value_of_t(ARG_S3_ADDRESS)?)
-    } else {
-      None
+    eth_opts: EthOpts {
+      master_addr: matches
+        .value_of(ARG_ETH_MASTER)
+        .map(web3::types::Address::from_str)
+        .transpose()?,
+      url: matches.value_of_t(ARG_ETH_URL)?,
+    },
+    s3_opts: S3Opts {
+      enabled: matches.is_present(ARG_S3),
+      s3_addr: matches.value_of_t(ARG_S3_ADDRESS)?,
+    },
+    lessor_opts: LessorOpts {
+      token_lease_terms: matches
+        .values_of(ARG_LESSOR_ASK)
+        .map(|values| {
+          values
+            .map(parse_lessor_ask)
+            .collect::<Result<HashMap<web3::types::Address, TokenLeaseAsk>, Box<dyn std::error::Error>>>()
+        })
+        .unwrap_or_else(|| Ok(Default::default()))?,
     },
   };
   tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()
     .unwrap()
-    .block_on(p2pim::daemon::listen_and_serve(daemon_opts))
+    .block_on(p2pim::daemon::listen_and_serve(&daemon_opts))
+}
+
+pub fn parse_lessor_ask(terms: &str) -> Result<(web3::types::Address, TokenLeaseAsk), Box<dyn std::error::Error>> {
+  let parts = terms.split(':').collect::<Vec<_>>();
+  if parts.len() != 8 {
+    return Err(format!("invalid ask format: required 8 fields, found {}", parts.len()).into());
+  }
+
+  //TOKEN:min_duration:max_duration:min_size:max_size:min_tokens_total:min_tokens_gb_hour:max_penalty_rate
+  let token = web3::types::Address::from_str(parts.get(0).unwrap())?;
+  let min_duration = parse_duration::parse(parts.get(1).unwrap())?;
+  let max_duration = parse_duration::parse(parts.get(2).unwrap())?;
+  let min_size = humanize_rs::bytes::Bytes::from_str(parts.get(3).unwrap())?;
+  let max_size = humanize_rs::bytes::Bytes::from_str(parts.get(4).unwrap())?;
+  let min_tokens_total = BigDecimal::from_str(parts.get(5).unwrap())?;
+  let min_tokens_gb_hour = BigDecimal::from_str(parts.get(6).unwrap())?;
+  let max_penalty_rate = f32::from_str(parts.get(7).unwrap())?;
+
+  if min_duration >= max_duration {
+    return Err(
+      format!(
+        "invalid ask values: min_duration ({}) is greather or equal to max_duration ({})",
+        parts.get(1).unwrap(),
+        parts.get(2).unwrap()
+      )
+      .into(),
+    );
+  }
+
+  if min_size.size() >= max_size.size() {
+    return Err(
+      format!(
+        "invalid ask values: min_size ({}) is greather of equal to max_size ({})",
+        parts.get(3).unwrap(),
+        parts.get(4).unwrap()
+      )
+      .into(),
+    );
+  }
+
+  Ok((
+    token,
+    TokenLeaseAsk {
+      duration_range: Range {
+        start: min_duration,
+        end: max_duration,
+      },
+      size_range: Range {
+        start: min_size.size(),
+        end: max_size.size(),
+      },
+      min_tokens_total,
+      min_tokens_gb_hour,
+      max_penalty_rate,
+    },
+  ))
 }

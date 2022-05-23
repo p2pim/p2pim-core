@@ -15,6 +15,7 @@ env_logger = "0.9.0"
 ethcontract = "0.17.0"
 futures = "0.3.21"
 hex = "0.4.3"
+humanize-rs = "0.1.5"
 libp2p = { version = "0.44.0", features = ["autonat",
   "deflate",
   "dns-tokio",

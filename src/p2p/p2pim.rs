@@ -2,7 +2,9 @@ use crate::libp2p::protobuf;
 use crate::libp2p::protobuf::handler;
 use crate::proto;
 use crate::proto::p2p::protocol_message::Message;
-use crate::proto::p2p::{protocol_message, ChallengeRequest, ChallengeResponse, RetrieveDelivery, RetrieveRequest};
+use crate::proto::p2p::{
+  protocol_message, ChallengeRequest, ChallengeResponse, LeaseRejection, RetrieveDelivery, RetrieveRequest,
+};
 use crate::types::{ChallengeKey, ChallengeProof, LeaseTerms, Signature};
 use libp2p::core::connection::ConnectionId;
 use libp2p::core::ConnectedPoint;
@@ -84,6 +86,13 @@ impl Behaviour {
     self.wake()
   }
 
+  pub fn send_proposal_rejection(&mut self, peer_id: PeerId, nonce: u64, reason: String) {
+    self
+      .message_queue
+      .push_back((peer_id, Message::LeaseRejection(LeaseRejection { nonce, reason })));
+    self.wake()
+  }
+
   fn wake(&mut self) {
     if let Some(waker) = self.waker.take() {
       waker.wake();
@@ -94,6 +103,7 @@ impl Behaviour {
 #[derive(Debug)]
 pub enum Event {
   ReceivedLeaseProposal(PeerId, LeaseProposal),
+  ReceivedLeaseProposalRejection(PeerId, u64, String),
   ReceivedChallengeRequest(PeerId, ChallengeKey),
   ReceivedChallengeResponse(PeerId, ChallengeKey, ChallengeProof),
   ReceivedRetrieveRequest(PeerId, u64),
@@ -221,7 +231,11 @@ impl NetworkBehaviour for Behaviour {
             Ok(p) => self.event_queue.push_back(p),
           }
         }
-        Some(Message::LeaseRejection(_)) => todo!("handle lease rejection"),
+        Some(Message::LeaseRejection(lease_rejection)) => self.event_queue.push_back(Event::ReceivedLeaseProposalRejection(
+          peer_id,
+          lease_rejection.nonce,
+          lease_rejection.reason,
+        )),
         Some(Message::RetrieveRequest(retrieve_request)) => self
           .event_queue
           .push_back(Event::ReceivedRetrieveRequest(peer_id, retrieve_request.nonce)),

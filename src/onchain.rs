@@ -12,7 +12,6 @@ use secp256k1::Secp256k1;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::pin::Pin;
 use std::time;
@@ -32,44 +31,58 @@ pub struct OnchainParams {
   pub master_address: Option<Address>,
 }
 
-// TODO should it be just Error
 #[derive(Debug)]
-pub enum OnchainError {
+pub enum Error {
   TokenNotDeployed(Address),
   MethodError(MethodError),
+  Web3Error(web3::error::Error),
 }
 
-impl Display for OnchainError {
+pub type Result<T> = core::result::Result<T, Error>;
+
+impl Display for Error {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
     match self {
-      OnchainError::TokenNotDeployed(_) => f.write_str("token not deployed"),
-      OnchainError::MethodError(err) => std::fmt::Display::fmt(err, f),
+      Error::TokenNotDeployed(_) => f.write_str("token not deployed"),
+      Error::MethodError(err) => std::fmt::Display::fmt(err, f),
+      Error::Web3Error(err) => std::fmt::Display::fmt(err, f),
     }
   }
 }
 
-impl Error for OnchainError {
-  fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl std::error::Error for Error {
+  fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
     match self {
-      OnchainError::TokenNotDeployed(_) => None,
-      OnchainError::MethodError(err) => Some(err),
+      Error::TokenNotDeployed(_) => None,
+      Error::MethodError(err) => Some(err),
+      Error::Web3Error(err) => Some(err),
     }
   }
 }
 
-impl From<MethodError> for OnchainError {
+impl From<MethodError> for Error {
   fn from(value: MethodError) -> Self {
-    OnchainError::MethodError(value)
+    Error::MethodError(value)
+  }
+}
+
+impl From<web3::error::Error> for Error {
+  fn from(value: web3::Error) -> Self {
+    Error::Web3Error(value)
   }
 }
 
 // TODO Better error handling, not returning dyn Error
 #[async_trait]
 pub trait Service: Clone + Send + Sync + 'static {
-  type StreamType: Stream<Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>>
-    + Unpin;
+  type StreamType: Stream<
+      Item = core::result::Result<
+        Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>,
+        EventError,
+      >,
+    > + Unpin;
 
-  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>, Box<dyn Error>>;
+  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>>;
 
   async fn listen_adjudicator_events(&self) -> Self::StreamType;
 
@@ -83,7 +96,7 @@ pub trait Service: Clone + Send + Sync + 'static {
     terms: LeaseTerms,
     data_parameters: DataParameters,
     lessee_signature: Signature,
-  ) -> Result<TransactionResult, Box<dyn Error>>;
+  ) -> Result<TransactionResult>;
 
   async fn sign_proposal(
     &self,
@@ -99,18 +112,15 @@ pub trait Service: Clone + Send + Sync + 'static {
     lessor_address: Address,
     nonce: u64,
     until: SystemTime,
-  ) -> Result<
-    Option<ethcontract::Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>>,
-    Box<dyn Error>,
-  >;
+  ) -> Result<Option<ethcontract::Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>>>;
 
-  fn deployed_tokens(&self) -> Vec<Address>;
-  async fn balance(&self, token_address: &Address) -> Result<Balance, OnchainError>;
+  async fn deployed_tokens(&self) -> Vec<(Address, Option<TokenMetadata>)>;
+  async fn balance(&self, token_address: &Address) -> Result<Balance>;
 
-  async fn withdraw(&self, token_address: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
-  async fn deposit(&self, token_address: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>>;
+  async fn withdraw(&self, token_address: &Address, amount: U256) -> Result<TransactionResult>;
+  async fn deposit(&self, token_address: &Address, amount: U256) -> Result<TransactionResult>;
 
-  async fn approve(&self, token_address: &Address) -> Result<TransactionResult, Box<dyn Error>>;
+  async fn approve(&self, token_address: &Address) -> Result<TransactionResult>;
 }
 
 #[derive(Clone)]
@@ -118,11 +128,12 @@ struct Implementation {
   account_wallet: Address,
   account_storage: Address,
   params: OnchainParams,
+  private_key: ethcontract::PrivateKey,
   web3: web3::Web3<Either<WebSocket, Ipc>>,
   deployments: HashMap<Address, (openzeppelin::IERC20Metadata, P2pimAdjudicator)>,
 }
 
-pub async fn new_service(params: OnchainParams) -> Result<impl Service, Box<dyn Error>> {
+pub async fn new_service(params: OnchainParams) -> core::result::Result<impl Service, Box<dyn std::error::Error>> {
   info!("initializing onchain subsystem");
 
   debug!("creating transport using {}", params.eth_url);
@@ -177,17 +188,27 @@ pub async fn new_service(params: OnchainParams) -> Result<impl Service, Box<dyn 
   let secret = secp256k1::SecretKey::from_slice(params.private_key.as_slice()).expect("this will never happen");
   let public_key = secp256k1::PublicKey::from_secret_key(&context, &secret);
   let account_storage = public_key.borrow().into_address();
+  let private = PrivateKey::from_raw(params.private_key).expect("TODO: this should not happen");
 
   Ok(Implementation {
     account_wallet,
     account_storage,
     params,
+    private_key: private,
     web3,
     deployments,
   })
 }
 
 impl Implementation {
+  fn deployment(&self, address: &Address) -> Result<(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
+    self
+      .deployments
+      .get(address)
+      .cloned()
+      .ok_or_else(|| Error::TokenNotDeployed(*address))
+  }
+
   async fn sign(
     &self,
     lessee_address: &Address,
@@ -234,10 +255,6 @@ impl Implementation {
         .expect("Why can fail?"),
     )
   }
-
-  fn deployment(&self, token_address: &Address) -> Option<(openzeppelin::IERC20Metadata, P2pimAdjudicator)> {
-    self.deployments.get(token_address).cloned()
-  }
 }
 
 #[async_trait]
@@ -246,13 +263,16 @@ impl Service for Implementation {
     Pin<
       Box<
         dyn Stream<
-          Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>,
+          Item = core::result::Result<
+            Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>,
+            EventError,
+          >,
         >,
       >,
     >,
   >;
 
-  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>, Box<dyn Error>> {
+  async fn block(&self, block_id: BlockId) -> Result<Option<Block<H256>>> {
     Ok(self.web3.eth().block(block_id).await?)
   }
 
@@ -266,7 +286,10 @@ impl Service for Implementation {
     ) -> Pin<
       Box<
         dyn Stream<
-          Item = Result<Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>, EventError>,
+          Item = core::result::Result<
+            Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>,
+            EventError,
+          >,
         >,
       >,
     > {
@@ -306,7 +329,7 @@ impl Service for Implementation {
     terms: LeaseTerms,
     data_parameters: DataParameters,
     lessee_signature: Signature,
-  ) -> Result<TransactionResult, Box<dyn Error>> {
+  ) -> Result<TransactionResult> {
     let lessor_address = self.account_storage();
 
     let lessor_signature = self
@@ -319,7 +342,7 @@ impl Service for Implementation {
       .try_into()
       .expect("TODO this should never happen");
 
-    let (_, adjudicator) = self.deployments.get(&terms.token_address).ok_or("deployment not found")?;
+    let (_, adjudicator) = self.deployment(&terms.token_address)?;
     let lease_deal = (
       lessee_address,
       lessor_address,
@@ -364,11 +387,8 @@ impl Service for Implementation {
     lessor_address: Address,
     nonce: u64,
     until: SystemTime,
-  ) -> Result<
-    Option<ethcontract::Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>>,
-    Box<dyn Error>,
-  > {
-    let (_, adjudicator) = self.deployments.get(token_address).ok_or("adjudicator not found")?;
+  ) -> Result<Option<ethcontract::Event<EventStatus<p2pim_ethereum_contracts::adjudicator::event_data::LeaseSealed>>>> {
+    let (_, adjudicator) = self.deployment(token_address)?;
     let lessee_address = self.account_storage();
     let last_block = self.web3.eth().block_number().await?;
     // TODO This is using polling, maybe better to use subscriptions
@@ -396,24 +416,18 @@ impl Service for Implementation {
           ev = event_stream.next() => match ev {
             Some(Ok(e)) => {
               if e.inner_data().nonce == nonce {
-                r = Some(Ok(Some(e)))
+                r = Some(Some(e))
               }
             },
-            Some(Err(e)) => warn!("error in event stream: {}", e),
-            None => {
-              warn!("the stream should never be closed");
-              r = Some(Err("event stream closed unexpected".to_string()));
-            }
+            Some(Err(e)) => warn!("TODO: error in event stream: {}", e),
+            None => unreachable!("TODO: the stream should never be closed"),
           },
           head = new_heads.next() => match head {
             Some(Ok(h)) => if UNIX_EPOCH + Duration::from_secs(h.timestamp.as_u64()) > until {
-              r = Some(Ok(None));
+              r = Some(None);
             },
-            Some(Err(e)) => warn!("error in heads stream: {}", e),
-            None => {
-              warn!("head stream closed unexpected");
-              r = Some(Err("head stream closed unexpected".to_string()));
-            }
+            Some(Err(e)) => warn!("TODO: error in heads stream: {}", e),
+            None => unreachable!("TODO: the stream should never be closed"),
           }
         }
         if r.is_some() {
@@ -428,36 +442,24 @@ impl Service for Implementation {
       Ok(false) => warn!("unsubscribed returns false"),
       Err(e) => error!("error while unsubscribe from heads: {}", e),
     };
-    Ok(result?)
+    Ok(result)
   }
 
-  fn deployed_tokens(&self) -> Vec<Address> {
-    self.deployments.keys().cloned().collect()
+  async fn deployed_tokens(&self) -> Vec<(Address, Option<TokenMetadata>)> {
+    futures::stream::iter(&self.deployments)
+      .then(|(address, (token, _))| async move { (*address, read_metadata(token).await) })
+      .collect()
+      .await
   }
 
-  async fn balance(&self, token_address: &Address) -> Result<Balance, OnchainError> {
-    fn ok_or_warn<R, E: std::fmt::Display>(result: Result<R, E>, method: &str, address: web3::types::Address) -> Option<R> {
-      if let Err(e) = result.as_ref() {
-        warn!("error calling `{}` method error={} address={}", method, e, address)
-      }
-      result.ok()
-    }
-
-    let (token, adjudicator) = self
-      .deployment(token_address)
-      .ok_or(OnchainError::TokenNotDeployed(*token_address))?;
+  async fn balance(&self, token_address: &Address) -> Result<Balance> {
+    let (token, adjudicator) = self.deployment(token_address)?;
     let (available_p2pim, locked_rents, locked_lets) = adjudicator.balance(self.account_storage).call().await?;
-    let maybe_name = ok_or_warn(token.name().call().await, "name", token.address());
-    let maybe_symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
-    let maybe_decimals = ok_or_warn(token.methods().decimals().call().await, "symbol", token.address());
 
     let available_account = token.balance_of(self.account_wallet).call().await?;
     let allowance_account = token.allowance(self.account_wallet, adjudicator.address()).call().await?;
 
-    let token_metadata = match (maybe_name, maybe_symbol, maybe_decimals) {
-      (Some(name), Some(symbol), Some(decimals)) => Some(TokenMetadata { name, symbol, decimals }),
-      _ => None,
-    };
+    let token_metadata = read_metadata(&token).await;
 
     Ok(Balance {
       token_metadata,
@@ -473,25 +475,25 @@ impl Service for Implementation {
     })
   }
 
-  async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>> {
-    let (_, adjudicator) = self.deployments.get(token_addres).ok_or("deployment for token not found")?;
+  async fn withdraw(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult> {
+    let (_, adjudicator) = self.deployment(token_addres)?;
     Ok(
       adjudicator
         .methods()
         .withdraw(amount, self.account_wallet)
-        .from(Account::Offline(PrivateKey::from_raw(self.params.private_key)?, None)) // TODO should we use the chain id?
+        .from(Account::Offline(self.private_key.clone(), None)) // TODO should we use the chain id?
         .send()
         .await?,
     )
   }
 
-  async fn deposit(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult, Box<dyn Error>> {
-    let (_, adjudicator) = self.deployments.get(token_addres).ok_or("deployment for token not found")?;
+  async fn deposit(&self, token_addres: &Address, amount: U256) -> Result<TransactionResult> {
+    let (_, adjudicator) = self.deployment(token_addres)?;
     Ok(adjudicator.methods().deposit(amount, self.account_storage).send().await?)
   }
 
-  async fn approve(&self, token_address: &Address) -> Result<TransactionResult, Box<dyn Error>> {
-    let (token, adjudicator) = self.deployments.get(token_address).ok_or("deployment for token not found")?;
+  async fn approve(&self, token_address: &Address) -> Result<TransactionResult> {
+    let (token, adjudicator) = self.deployment(token_address)?;
     Ok(
       token
         .approve(adjudicator.address(), U256::max_value())
@@ -499,5 +501,27 @@ impl Service for Implementation {
         .send()
         .await?,
     )
+  }
+}
+
+fn ok_or_warn<R, E: std::fmt::Display>(
+  result: core::result::Result<R, E>,
+  method: &str,
+  address: web3::types::Address,
+) -> Option<R> {
+  if let Err(e) = result.as_ref() {
+    warn!("error calling `{}` method error={} address={}", method, e, address)
+  }
+  result.ok()
+}
+
+async fn read_metadata(token: &openzeppelin::IERC20Metadata) -> Option<TokenMetadata> {
+  let maybe_name = ok_or_warn(token.name().call().await, "name", token.address());
+  let maybe_symbol = ok_or_warn(token.methods().symbol().call().await, "symbol", token.address());
+  let maybe_decimals = ok_or_warn(token.methods().decimals().call().await, "decimals", token.address());
+
+  match (maybe_name, maybe_symbol, maybe_decimals) {
+    (Some(name), Some(symbol), Some(decimals)) => Some(TokenMetadata { name, symbol, decimals }),
+    _ => None,
   }
 }

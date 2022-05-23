@@ -30,9 +30,17 @@ pub enum Event {
 #[async_trait]
 pub trait Service: Stream<Item = Event> + Send + Sync + Clone + Unpin + 'static {
   async fn challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> anyhow::Result<ChallengeProof>;
-  async fn send_proposal(&self, peer_id: PeerId, nonce: u64, terms: LeaseTerms, signature: Signature, data: Vec<u8>);
+  async fn send_proposal(
+    &self,
+    peer_id: PeerId,
+    nonce: u64,
+    terms: LeaseTerms,
+    signature: Signature,
+    data: Vec<u8>,
+  ) -> String;
   async fn send_challenge_proof(&self, peer_id: PeerId, challenge_key: ChallengeKey, challenge_proof: ChallengeProof);
   async fn send_retrieve_delivery(&self, peer_id: PeerId, nonce: u64, data: Vec<u8>);
+  async fn send_proposal_rejection(&self, peer_id: PeerId, nonce: u64, reason: String);
   async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>>;
   fn find_public_key(&self, peer_id: &PeerId) -> Option<secp256k1::PublicKey>;
   fn known_peers(&self) -> Vec<PeerId>;
@@ -61,13 +69,52 @@ pub async fn create_p2p(keypair: Keypair) -> Result<impl Service, Box<dyn Error>
     behaviour: Arc::new(Mutex::new(swarm)),
     pending_challenges: Arc::new(Mutex::new(OneshotListerners::new())),
     pending_retrieves: Arc::new(Mutex::new(OneshotListerners::new())),
+    pending_proposals: Arc::new(Mutex::new(OneshotListerners::new())),
   })
 }
 
+// TODO pending_* timeouts and cleanup
 struct Implementation {
   behaviour: Arc<Mutex<Swarm<behaviour::Behaviour>>>,
   pending_challenges: Arc<Mutex<OneshotListerners<(PeerId, ChallengeKey), ChallengeProof>>>,
   pending_retrieves: Arc<Mutex<OneshotListerners<(PeerId, u64), Vec<u8>>>>,
+  pending_proposals: Arc<Mutex<OneshotListerners<(PeerId, u64), String>>>,
+}
+
+trait Notify<K, V> {
+  fn notify(&self, key: &K, value: V) -> usize;
+}
+
+impl<K: std::hash::Hash + std::cmp::Eq, V: Clone> Notify<K, V> for Arc<Mutex<OneshotListerners<K, V>>> {
+  fn notify(&self, key: &K, value: V) -> usize {
+    self.lock().unwrap().notify(key, value)
+  }
+}
+
+trait Listeners<K, V> {
+  type FutureType: Future<Output = V>;
+  fn new_listener(&self, key: K) -> Self::FutureType;
+}
+
+impl<K: std::hash::Hash + std::cmp::Eq + 'static, V: Clone + Send + 'static> Listeners<K, V>
+  for Arc<Mutex<OneshotListerners<K, V>>>
+{
+  type FutureType = Box<dyn Future<Output = V> + Send + Sync + Unpin + 'static>;
+
+  fn new_listener(&self, key: K) -> Self::FutureType {
+    Box::new(self.lock().unwrap().new_listener(key))
+  }
+}
+
+impl Clone for Implementation {
+  fn clone(&self) -> Self {
+    Implementation {
+      behaviour: Arc::clone(&self.behaviour),
+      pending_challenges: Arc::clone(&self.pending_challenges),
+      pending_retrieves: Arc::clone(&self.pending_retrieves),
+      pending_proposals: Arc::clone(&self.pending_proposals),
+    }
+  }
 }
 
 impl Stream for Implementation {
@@ -90,9 +137,7 @@ impl Stream for Implementation {
           } => {
             let count = self
               .pending_challenges
-              .lock()
-              .unwrap()
-              .notify((peer_id, challenge_key.clone()), challenge_proof);
+              .notify(&(peer_id, challenge_key.clone()), challenge_proof);
             if count == 0 {
               warn!(
                 "received a proof not expected peer_id={} nonce={} block_number={}",
@@ -104,9 +149,18 @@ impl Stream for Implementation {
             return Poll::Ready(Some(Event::ReceivedRetrieveRequest { peer_id, nonce }));
           }
           behaviour::Event::ReceivedRetrieveDelivery { peer_id, nonce, data } => {
-            let count = self.pending_retrieves.lock().unwrap().notify((peer_id, nonce), data);
+            let count = self.pending_retrieves.notify(&(peer_id, nonce), data);
             if count == 0 {
               warn!("received retrieve delivery not expected peer_id={} nonce={}", peer_id, nonce);
+            }
+          }
+          behaviour::Event::ReceivedLeaseProposalRejection { peer_id, nonce, reason } => {
+            let count = self.pending_proposals.notify(&(peer_id, nonce), reason.clone());
+            if count == 0 {
+              warn!(
+                "received a proposal rejection not expected peer_id={} nonce={} reason={}",
+                peer_id, nonce, reason
+              );
             }
           }
         },
@@ -122,24 +176,10 @@ impl Stream for Implementation {
   }
 }
 
-impl Clone for Implementation {
-  fn clone(&self) -> Self {
-    Implementation {
-      behaviour: Arc::clone(&self.behaviour),
-      pending_challenges: Arc::clone(&self.pending_challenges),
-      pending_retrieves: Arc::clone(&self.pending_retrieves),
-    }
-  }
-}
-
 #[async_trait]
 impl Service for Implementation {
   async fn challenge(&self, peer_id: PeerId, challenge_key: ChallengeKey) -> anyhow::Result<ChallengeProof> {
-    let listener = self
-      .pending_challenges
-      .lock()
-      .unwrap()
-      .new_listener((peer_id, challenge_key.clone()));
+    let listener = self.pending_challenges.new_listener((peer_id, challenge_key.clone()));
     self
       .behaviour
       .lock()
@@ -150,9 +190,16 @@ impl Service for Implementation {
     Ok(listener.await)
   }
 
-  async fn send_proposal(&self, peer_id: PeerId, nonce: u64, terms: LeaseTerms, signature: Signature, data: Vec<u8>) {
-    let mut guard = self.behaviour.lock().unwrap();
-    guard.behaviour_mut().p2pim.send_proposal(
+  async fn send_proposal(
+    &self,
+    peer_id: PeerId,
+    nonce: u64,
+    terms: LeaseTerms,
+    signature: Signature,
+    data: Vec<u8>,
+  ) -> String {
+    let listener = self.pending_proposals.new_listener((peer_id, nonce));
+    self.behaviour.lock().unwrap().behaviour_mut().p2pim.send_proposal(
       peer_id,
       p2pim::LeaseProposal {
         nonce,
@@ -160,7 +207,8 @@ impl Service for Implementation {
         signature,
         data,
       },
-    )
+    );
+    listener.await
   }
 
   async fn send_challenge_proof(&self, peer_id: PeerId, challenge_key: ChallengeKey, challenge_proof: ChallengeProof) {
@@ -176,8 +224,13 @@ impl Service for Implementation {
     guard.behaviour_mut().p2pim.send_retrieve_delivery(peer_id, nonce, data);
   }
 
+  async fn send_proposal_rejection(&self, peer_id: PeerId, nonce: u64, reason: String) {
+    let mut guard = self.behaviour.lock().unwrap();
+    guard.behaviour_mut().p2pim.send_proposal_rejection(peer_id, nonce, reason);
+  }
+
   async fn retrieve(&self, peer_id: PeerId, nonce: u64) -> anyhow::Result<Vec<u8>> {
-    let listener = self.pending_retrieves.lock().unwrap().new_listener((peer_id, nonce));
+    let listener = self.pending_retrieves.new_listener((peer_id, nonce));
     self
       .behaviour
       .lock()

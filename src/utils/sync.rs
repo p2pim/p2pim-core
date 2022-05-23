@@ -19,8 +19,8 @@ impl<K: Hash + Eq, V: Clone> OneshotListerners<K, V> {
     receiver.map(|r| r.expect("we never cancel the sender"))
   }
 
-  pub fn notify(&mut self, key: K, value: V) -> usize {
-    let senders = self.inner.remove(&key).unwrap_or_else(Vec::new);
+  pub fn notify(&mut self, key: &K, value: V) -> usize {
+    let senders = self.inner.remove(key).unwrap_or_else(Vec::new);
     let res = senders.len();
     senders.into_iter().for_each(|sender| {
       if sender.send(value.clone()).is_err() {

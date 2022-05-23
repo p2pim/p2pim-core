@@ -71,8 +71,8 @@ where
   TReactor: reactor::Service,
 {
   async fn get_info(&self, _: Request<GetInfoRequest>) -> Result<Response<GetInfoResponse>, Status> {
-    let balance = futures::stream::iter(self.onchain.deployed_tokens().iter())
-      .then(|token_address| async move {
+    let balance = futures::stream::iter(self.onchain.deployed_tokens().await.iter())
+      .then(|(token_address, _)| async move {
         self
           .onchain
           .balance(token_address)

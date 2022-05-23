@@ -35,6 +35,11 @@ pub enum Event {
     peer_id: PeerId,
     proposal: LeaseProposal,
   },
+  ReceivedLeaseProposalRejection {
+    peer_id: PeerId,
+    nonce: u64,
+    reason: String,
+  },
   ReceivedChallengeRequest {
     peer_id: PeerId,
     challenge_key: ChallengeKey,
@@ -153,6 +158,9 @@ impl NetworkBehaviourEventProcess<p2pim::Event> for Behaviour {
       p2pim::Event::ReceivedLeaseProposal(peer_id, proposal) => self
         .events_queue
         .push_back(Event::ReceivedLeaseProposal { peer_id, proposal }),
+      p2pim::Event::ReceivedLeaseProposalRejection(peer_id, nonce, reason) => self
+        .events_queue
+        .push_back(Event::ReceivedLeaseProposalRejection { peer_id, nonce, reason }),
       p2pim::Event::ReceivedChallengeRequest(peer_id, challenge_key) => self
         .events_queue
         .push_back(Event::ReceivedChallengeRequest { peer_id, challenge_key }),

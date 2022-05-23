@@ -2,15 +2,16 @@ use crate::p2p::p2pim::LeaseProposal;
 use crate::p2p::Event;
 use crate::types::{ChainConfirmation, ChallengeKey, ChallengeProof, Lease, LeaseTerms};
 use crate::utils::ethereum::IntoAddress;
-use crate::{cryptography, data, onchain, p2p, persistence};
+use crate::{cryptography, data, lessor, onchain, p2p, persistence};
 use anyhow::anyhow;
 use ethcontract::transaction::TransactionResult;
 use ethcontract::{EventMetadata, EventStatus};
 use futures::future::join_all;
-use futures::{FutureExt, StreamExt};
+use futures::{select, FutureExt, StreamExt};
 use libp2p::PeerId;
 use log::{error, info, trace, warn};
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
@@ -25,33 +26,38 @@ pub trait Service: Clone + Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-struct Implementation<TData, TOnchain, TP2p, TPersistence>
+struct Implementation<TData, TLessor, TOnchain, TP2p, TPersistence>
 where
   TData: data::Service,
+  TLessor: lessor::Service,
   TOnchain: onchain::Service,
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
 {
   data: TData,
+  lessor: TLessor,
   onchain: TOnchain,
   p2p: TP2p,
   persistence: TPersistence,
 }
 
-pub fn new_service<TData, TOnchain, TP2p, TPersistence>(
+pub fn new_service<TData, TLessor, TOnchain, TP2p, TPersistence>(
   data: TData,
+  lessor: TLessor,
   onchain: TOnchain,
   p2p: TP2p,
   persistence: TPersistence,
 ) -> (impl Service, impl Future<Output = ()>)
 where
   TData: data::Service,
+  TLessor: lessor::Service,
   TOnchain: onchain::Service,
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
 {
   let implementation = Implementation {
     data,
+    lessor,
     onchain,
     p2p,
     persistence,
@@ -65,9 +71,42 @@ where
   (implementation, join_all(futures).map(|_| ()))
 }
 
-impl<TData, TOnchain, TP2p, TPersistence> Implementation<TData, TOnchain, TP2p, TPersistence>
+enum ProcessProposalError {
+  Rejected(lessor::RejectedReason),
+  OnchainError(onchain::Error),
+  DataError(anyhow::Error),
+}
+
+impl From<onchain::Error> for ProcessProposalError {
+  fn from(value: onchain::Error) -> Self {
+    ProcessProposalError::OnchainError(value)
+  }
+}
+
+impl From<anyhow::Error> for ProcessProposalError {
+  fn from(value: anyhow::Error) -> Self {
+    ProcessProposalError::DataError(value)
+  }
+}
+
+impl Display for ProcessProposalError {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    match self {
+      ProcessProposalError::Rejected(reason) => write!(f, "proposal rejected: {}", reason),
+      ProcessProposalError::OnchainError(err) => {
+        write!(f, "onchain error: {}", err)
+      }
+      ProcessProposalError::DataError(err) => {
+        write!(f, "data error: {}", err)
+      }
+    }
+  }
+}
+
+impl<TData, TLessor, TOnchain, TP2p, TPersistence> Implementation<TData, TLessor, TOnchain, TP2p, TPersistence>
 where
   TData: data::Service,
+  TLessor: lessor::Service,
   TOnchain: onchain::Service,
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
@@ -78,9 +117,19 @@ where
         Event::ReceivedLeaseProposal { peer_id, proposal } => {
           let self_clone = self.clone();
           tokio::task::spawn(async move {
-            let result = self_clone.seal_lease(peer_id, proposal).await;
-            if let Err(e) = result {
-              error!("TODO (Handling): error while trying to seal deal: {}", e);
+            let nonce = proposal.nonce;
+            match self_clone.process_proposal_received(peer_id, proposal).await {
+              Ok(TransactionResult::Hash(hash)) => info!("lease sealed transaction_hash={}", hash),
+              Ok(TransactionResult::Receipt(receipt)) => info!("lease sealed transaction_hash={}", receipt.transaction_hash),
+              Err(ProcessProposalError::Rejected(reason)) => {
+                self_clone
+                  .p2p
+                  .send_proposal_rejection(peer_id, nonce, reason.to_string())
+                  .await;
+              }
+              Err(err) => {
+                error!("unexpected error while processing lease proposal: {}", err);
+              }
             }
           });
         }
@@ -114,7 +163,7 @@ where
         Ok(ethcontract::Event { data, meta: Some(meta) }) => {
           let result = self.process_onchain_event(data, meta).await;
           if let Err(e) = result {
-            error!("reactor: error processing event: {}", e)
+            error!("reactor: error processing onchain event: {}", e)
           }
         }
         Ok(ethcontract::Event { meta: None, .. }) => {
@@ -124,18 +173,30 @@ where
     }
   }
 
-  async fn seal_lease(&self, peer_id: PeerId, proposal: LeaseProposal) -> Result<TransactionResult, Box<dyn Error>>
+  async fn process_proposal_received(
+    &self,
+    peer_id: PeerId,
+    proposal: LeaseProposal,
+  ) -> Result<TransactionResult, ProcessProposalError>
   where
     TData: data::Service,
     TOnchain: onchain::Service,
     TP2p: p2p::Service,
   {
+    if let Err(e) = self
+      .lessor
+      .proposal(&peer_id, &proposal.lease_terms, proposal.data.len())
+      .await
+    {
+      return Err(ProcessProposalError::Rejected(e));
+    }
+
     let lessee_address = self
       .p2p
       .find_public_key(&peer_id)
       .as_ref()
       .map(IntoAddress::into_address)
-      .ok_or("peer id not found")?;
+      .expect("peer id should be identified already");
     // TODO check if the nonce is duplicated
     let data_parameters = self.data.store(peer_id, proposal.nonce, proposal.data.as_slice()).await?;
 
@@ -211,9 +272,10 @@ where
 }
 
 #[async_trait]
-impl<TData, TOnchain, TP2p, TPersistence> Service for Implementation<TData, TOnchain, TP2p, TPersistence>
+impl<TData, TLessor, TOnchain, TP2p, TPersistence> Service for Implementation<TData, TLessor, TOnchain, TP2p, TPersistence>
 where
   TData: data::Service,
+  TLessor: lessor::Service,
   TOnchain: onchain::Service,
   TP2p: p2p::Service,
   TPersistence: persistence::Service,
@@ -247,22 +309,28 @@ where
       })
       .await;
 
-    self.p2p.send_proposal(peer_id, nonce, terms, signature, data).await;
+    let mut p2p_future = self.p2p.send_proposal(peer_id, nonce, terms, signature, data).fuse();
 
-    let seal_lease_event = self
+    let mut seal_lease_future = self
       .onchain
       .wait_for_seal_lease(&token_address, lessor_address, nonce, expiration)
-      .await?;
+      .fuse();
 
-    match seal_lease_event {
-      Some(ev) => {
-        if ev.is_removed() {
-          todo!()
-        } else {
-          Ok(ev.meta.expect("we not look for transactions not confirmed").transaction_hash)
+    select! {
+      reason = p2p_future => Err(format!("lease rejected with reason: {}, note that the lease can still be processed on chain", reason).into()),
+      e = seal_lease_future =>  {
+        match e {
+          Ok(Some(ev)) => {
+            if ev.is_removed() {
+              todo!()
+            } else {
+              Ok(ev.meta.expect("we not look for transactions not confirmed").transaction_hash)
+            }
+          }
+          Ok(None) => Err("lease timed out".into()),
+          Err(e) => Err(e.into()),
         }
       }
-      None => Err("lease timed out".into()),
     }
   }
 

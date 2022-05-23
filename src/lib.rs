@@ -134,6 +134,7 @@ pub mod cryptography;
 pub mod daemon;
 pub mod data;
 pub mod grpc;
+pub mod lessor;
 pub mod libp2p;
 pub mod onchain;
 pub mod p2p;
